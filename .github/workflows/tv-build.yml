@@ -6,8 +6,8 @@ on:
 
 jobs:
   engine:
-    # Xcode 27 is needed for the tvOS 27 SDK.
-    runs-on: macos-26
+    # Xcode 27 (tvOS 27 SDK) lives on its own image: label xcode-27, arm64 only.
+    runs-on: xcode-27
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -16,7 +16,7 @@ jobs:
 
       - name: Pick Xcode 27
         run: |
-          X=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)
+          X=$(ls -d /Applications/Xcode_27*.app /Applications/Xcode.app 2>/dev/null | head -1)
           [ -n "$X" ] || { ls -d /Applications/Xcode*.app; echo "no Xcode 27 on this image"; exit 1; }
           sudo xcode-select -s "$X"
           xcodebuild -version
