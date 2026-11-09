@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <spawn.h>
 
 #ifndef SYS_sigaltstack
 #define SYS_sigaltstack 53
@@ -41,4 +42,20 @@ pid_t atv_fork(void) {
     errno = ENOSYS;
     return -1;
 }
+
+/* No child processes on tvOS: the file actions are accepted and ignored, and
+   the spawn itself reports ENOSYS (posix_spawn returns the error number). */
+int atv_posix_spawn(pid_t *pid, const char *path, const posix_spawn_file_actions_t *fa,
+                    const posix_spawnattr_t *attr, char *const argv[], char *const envp[]) {
+    (void)pid; (void)fa; (void)attr; (void)argv; (void)envp;
+    fprintf(stderr, "atv-macos: not spawning %s (no child processes on tvOS)\n", path ? path : "?");
+    return ENOSYS;
+}
+int atv_posix_spawn_file_actions_init(posix_spawn_file_actions_t *fa) { if (fa) *fa = NULL; return 0; }
+int atv_posix_spawn_file_actions_addopen(posix_spawn_file_actions_t *fa, int fd, const char *path,
+                                         int oflag, mode_t mode) {
+    (void)fa; (void)fd; (void)path; (void)oflag; (void)mode;
+    return 0;
+}
+int atv_posix_spawn_file_actions_destroy(posix_spawn_file_actions_t *fa) { (void)fa; return 0; }
 #endif
