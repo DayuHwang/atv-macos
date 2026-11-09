@@ -1,0 +1,37 @@
+name: tvOS build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  engine:
+    # Xcode 27 is needed for the tvOS 27 SDK.
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Pick Xcode 27
+        run: |
+          X=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)
+          [ -n "$X" ] || { ls -d /Applications/Xcode*.app; echo "no Xcode 27 on this image"; exit 1; }
+          sudo xcode-select -s "$X"
+          xcodebuild -version
+          xcrun --sdk appletvos --show-sdk-version
+
+      - name: JIT servicer tests
+        run: python3 jit/test_servicer.py
+
+      - name: Engine for appletvos
+        run: zsh tv/build-engine.sh
+
+      - name: Installer stack for appletvos
+        run: zsh tv/build-restore.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tv-libs
+          path: build/tv/*.a

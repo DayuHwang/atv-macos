@@ -1,0 +1,16 @@
+atv-macos — virtual Mac on Apple TV
+Copyright (C) 2026 Dayu Huang
+
+This program is free software; you can redistribute it and/or modify it under
+the terms of the GNU General Public License as published by the Free Software
+Foundation; either version 2 of the License, or (at your option) any later
+version.
+
+It builds on Henge (https://github.com/Leviidev/Henge, GPL-2.0-or-later),
+included unmodified as the git submodule engine/henge; see that directory for
+its licence and third-party notices.
+
+This program is distributed in the hope that it will be useful, but WITHOUT
+ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See <https://www.gnu.org/licenses/> for the full text
+of the GNU General Public License.
