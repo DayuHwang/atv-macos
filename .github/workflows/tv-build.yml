@@ -29,6 +29,7 @@ jobs:
         run: zsh tv/build-engine.sh
 
       - name: Installer stack for appletvos
+        if: always()
         run: zsh tv/build-restore.sh
 
       - uses: actions/upload-artifact@v4
