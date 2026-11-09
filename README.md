@@ -23,8 +23,14 @@
 5. **Remote use**: VNC on the Apple TV's LAN address; from China via the Tailscale setup.
 
 ## Status
+- [x] Model confirmed: AppleTV14,1 (Apple TV 4K 3rd gen, A15), tvOS 27.2
 - [x] JIT servicer + fake-debugserver test (`python3 jit/test_servicer.py` → PASS)
+- [x] Henge engine builds for appletvos (`tv/build-engine.sh`, CI on the xcode-27 image)
+- [x] Installer stack builds for appletvos (`tv/build-restore.sh`)
+- [x] tvOS compat layer (`tv/compat`): sigaltstack via direct syscall; fork, posix_spawn
+      and the EDR log flag stubbed (unreachable on Apple TV)
 - [ ] Transport adapter to pymobiledevice3 debugproxy + DVT launch (needs the lab's installed version)
-- [ ] Confirm model / storage
-- [ ] tvOS target, deps rebuilt for appletvos, headless shell, RFB server
+- [ ] Storage capacity (64 or 128 GB)
+- [ ] tvOS app: headless shell, built-in RFB server (next)
+- [ ] libslirp + glib for appletvos (guest networking)
 - [ ] Build (macOS + Xcode 27), sign, install, first boot
