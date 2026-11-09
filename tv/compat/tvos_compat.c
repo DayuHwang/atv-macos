@@ -9,6 +9,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <sys/syscall.h>
+#include <sys/types.h>
 
 #ifndef SYS_sigaltstack
 #define SYS_sigaltstack 53
@@ -34,5 +35,10 @@ int atv_sigaltstack(const stack_t *ss, stack_t *oss) {
         return -1;
     }
     return 0;
+}
+
+pid_t atv_fork(void) {
+    errno = ENOSYS;
+    return -1;
 }
 #endif

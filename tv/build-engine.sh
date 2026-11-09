@@ -45,6 +45,7 @@ build "$H/devices/pvg_metal.m" "$OUT/obj/engine/henge/devices/pvg_metal.o" \
 build "$H/host/enter.S" "$OUT/obj/engine/henge/host/enter.o"
 build "$ROOT/tv/net_stub.c" "$OUT/obj/tv/net_stub.o" "${CFLAGS[@]}"
 build "$ROOT/tv/compat/tvos_compat.c" "$OUT/obj/tv/compat/tvos_compat.o" -std=c11 -Wall -O2
+build "$ROOT/tv/compat/tvos_compat_objc.m" "$OUT/obj/tv/compat/tvos_compat_objc.o" "${COMPAT[@]}" -fobjc-arc -Wall -O2
 
 if (( ${#failed[@]} )); then
     echo "${#failed[@]} file(s) failed for tvOS:"
