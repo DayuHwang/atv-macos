@@ -35,4 +35,13 @@
 - [x] tvOS app (`tv/app`): unattended host, built-in VNC (RFB 3.3–3.8, Raw/ZRLE, VNC auth),
       status page on :8080; CI builds an unsigned arm64 tvOS IPA
 - [ ] libslirp + glib for appletvos (guest networking)
-- [ ] Sign with the owner's Apple ID (Impactor on Windows), install, first boot
+- [x] Signing on Windows: `tvsign`, a command added to Sideloader's CLI (pc/sideloader), built
+      and packaged with plist.dll + OpenSSL 3 by CI (workflow sideloader-tvos.yml)
+- [x] `pc/atv_install.py`: UDID over the tunnel, tvsign, install over RSD
+- [ ] First install and boot on the real Apple TV
+
+## On the Windows PC (AppleTV-Windows-Lab folder)
+1. Put `ATVMac-unsigned.ipa` and `sideloader-tvos-win64.zip` in Downloads.
+2. `ATV-Mac-Install.cmd`: type your Apple ID, password and 2FA code when asked.
+   Free Apple IDs sign for 7 days; run it again to renew.
+3. `ATV-Mac-Keeper.cmd`: keep it open. It shows the VNC address and password.
