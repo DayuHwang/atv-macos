@@ -29,8 +29,6 @@ jobs:
           $exe = "pc/atv-sign/target/release/atv-sign.exe"
           & $exe --help
           if ($LASTEXITCODE -ne 0) { throw "atv-sign --help exited $LASTEXITCODE" }
-          $deps = & "${env:VCToolsInstallDir}bin\Hostx64\x64\dumpbin.exe" /dependents $exe 2>$null
-          if ($deps) { $deps | Select-String "\.dll" }
           (Get-Item $exe).Length
 
       - uses: actions/upload-artifact@v4
