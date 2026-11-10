@@ -20,6 +20,9 @@ struct HostStatus: Codable {
     var gpuFrames: UInt64 = 0
     var freeGB: Double = 0
     var addresses: [String] = []
+    /// The VNC server's ZRLE works (older builds sent empty ZRLE rectangles,
+    /// so the PC side strips ZRLE from what the viewer offers when this is missing).
+    var vncZRLE = true
 }
 
 struct MachineConfig: Codable {

@@ -333,7 +333,8 @@ final class RFBSession {
     private var challenge = [UInt8]()
     private var packer = PixelPacker(.native)
     private var useZRLE = false
-    private var zstream: z_stream?
+    /// zlib keeps a pointer back to its z_stream, so it lives at one fixed address.
+    private var zstream: UnsafeMutablePointer<z_stream>?
     private var current: [UInt8], sent: [UInt8]
     private var haveSent = false
     private var wantFull = false, wantIncremental = false, sending = false
@@ -364,7 +365,7 @@ final class RFBSession {
         guard !closed else { return }
         closed = true
         timer?.cancel()
-        if var z = zstream { deflateEnd(&z); zstream = nil }
+        if let z = zstream { deflateEnd(z); z.deinitialize(count: 1); z.deallocate(); zstream = nil }
         conn.cancel()
         Log.line("vnc", "viewer disconnected")
         onClose(self)
@@ -525,9 +526,8 @@ final class RFBSession {
         current.withUnsafeBufferPointer { cur in
             for r in rects {
                 msg.append(contentsOf: be16(r.x) + be16(r.y) + be16(r.w) + be16(r.h))
-                if useZRLE {
+                if useZRLE, let z = zrle(cur.baseAddress!, r) {
                     msg.append(contentsOf: be32(16))
-                    let z = zrle(cur.baseAddress!, r)
                     msg.append(contentsOf: be32(z.count)); msg.append(contentsOf: z)
                 } else {
                     msg.append(contentsOf: be32(0))
@@ -574,7 +574,8 @@ final class RFBSession {
     }
 
     /// ZRLE with raw tiles: the compression is all zlib's, kept in one stream per viewer.
-    private func zrle(_ canvas: UnsafePointer<UInt8>, _ r: (x: Int, y: Int, w: Int, h: Int)) -> [UInt8] {
+    /// nil when zlib fails; the session then drops to Raw for good.
+    private func zrle(_ canvas: UnsafePointer<UInt8>, _ r: (x: Int, y: Int, w: Int, h: Int)) -> [UInt8]? {
         var plain = [UInt8](); plain.reserveCapacity(r.w * r.h * 4 + 1024)
         for ty in stride(from: r.y, to: r.y + r.h, by: 64) {
             let th = min(64, r.y + r.h - ty)
@@ -588,22 +589,40 @@ final class RFBSession {
             }
         }
         if zstream == nil {
-            var z = z_stream()
-            deflateInit_(&z, 1, zlibVersion(), Int32(MemoryLayout<z_stream>.size))
+            let z = UnsafeMutablePointer<z_stream>.allocate(capacity: 1)
+            z.initialize(to: z_stream())
+            if deflateInit_(z, 1, zlibVersion(), Int32(MemoryLayout<z_stream>.size)) != Z_OK {
+                z.deinitialize(count: 1); z.deallocate()
+                Log.line("vnc", "zlib init failed; using Raw")
+                useZRLE = false
+                return nil
+            }
             zstream = z
         }
-        var out = [UInt8](repeating: 0, count: Int(deflateBound(&zstream!, uLong(plain.count))) + 64)
-        let produced: Int = plain.withUnsafeMutableBufferPointer { inp in
-            out.withUnsafeMutableBufferPointer { o in
-                zstream!.next_in = inp.baseAddress
-                zstream!.avail_in = uInt(inp.count)
-                zstream!.next_out = o.baseAddress
-                zstream!.avail_out = uInt(o.count)
-                deflate(&zstream!, Z_SYNC_FLUSH)
-                return o.count - Int(zstream!.avail_out)
+        let z = zstream!
+        var out = [UInt8](); out.reserveCapacity(plain.count / 2 + 1024)
+        var chunk = [UInt8](repeating: 0, count: 1 << 18)
+        var failed: Int32? = nil
+        plain.withUnsafeMutableBufferPointer { inp in
+            z.pointee.next_in = inp.baseAddress
+            z.pointee.avail_in = uInt(inp.count)
+            chunk.withUnsafeMutableBufferPointer { o in
+                repeat {
+                    z.pointee.next_out = o.baseAddress
+                    z.pointee.avail_out = uInt(o.count)
+                    let rc = deflate(z, Z_SYNC_FLUSH)
+                    if rc != Z_OK && rc != Z_BUF_ERROR { failed = rc; break }
+                    out.append(contentsOf: UnsafeBufferPointer(start: o.baseAddress, count: o.count - Int(z.pointee.avail_out)))
+                } while z.pointee.avail_out == 0
             }
+            z.pointee.next_in = nil
         }
-        return Array(out.prefix(produced))
+        if let rc = failed {
+            Log.line("vnc", "zlib deflate failed (\(rc)); using Raw")
+            useZRLE = false
+            return nil
+        }
+        return out
     }
 }
 
