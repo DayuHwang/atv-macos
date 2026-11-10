@@ -130,7 +130,10 @@ enum ScreenSource {
     /// before that, and our own status card before the Mac starts.
     static func capture(into canvas: UnsafeMutablePointer<UInt8>, width: Int, height: Int) {
         if henge_vm_state() == 1 {
-            if henge_vm_gpu_frames() > 0, henge_vm_snapshot(canvas, Int32(width), Int32(height)) == 0 { return }
+            if henge_vm_gpu_frames() > 0, henge_vm_snapshot(canvas, Int32(width), Int32(height)) == 0 {
+                drawPointer(into: canvas, width: width, height: height)
+                return
+            }
             var px: UnsafePointer<UInt8>?, w: Int32 = 0, h: Int32 = 0, stride: Int32 = 0
             if henge_vm_boot_display(&px, &w, &h, &stride) == 0, let px, w > 0, h > 0 {
                 fit(px, Int(w), Int(h), Int(stride), into: canvas, width, height)
@@ -138,6 +141,52 @@ enum ScreenSource {
             }
         }
         drawStatus(into: canvas, width: width, height: height)
+    }
+
+    /// The engine's snapshot is the desktop without the hardware cursor (the GPU
+    /// draws that as a separate plane), so viewers would see no pointer at all.
+    /// Paint an arrow where the guest says its pointer is: B black, W white.
+    private static let arrow: [[UInt8]] = [
+        "W           ",
+        "WW          ",
+        "WBW         ",
+        "WBBW        ",
+        "WBBBW       ",
+        "WBBBBW      ",
+        "WBBBBBW     ",
+        "WBBBBBBW    ",
+        "WBBBBBBBW   ",
+        "WBBBBBBBBW  ",
+        "WBBBBBBBBBW ",
+        "WBBBBBBWWWWW",
+        "WBBBWBBW    ",
+        "WBBWWBBW    ",
+        "WBW  WBBW   ",
+        "WW   WBBW   ",
+        "W     WBBW  ",
+        "      WBBW  ",
+        "       WW   ",
+    ].map { Array($0.utf8) }
+
+    private static func drawPointer(into canvas: UnsafeMutablePointer<UInt8>, width: Int, height: Int) {
+        var gx: Int32 = 0, gy: Int32 = 0
+        guard henge_vm_pointer(&gx, &gy) == 0 else { return }
+        let scale = max(1.0, Double(height) / 720.0)
+        let rows = arrow.count, cols = arrow[0].count
+        for oy in 0..<Int(Double(rows) * scale) {
+            let py = Int(gy) + oy
+            guard py >= 0, py < height else { continue }
+            let row = arrow[min(rows - 1, Int(Double(oy) / scale))]
+            for ox in 0..<Int(Double(cols) * scale) {
+                let px = Int(gx) + ox
+                guard px >= 0, px < width else { continue }
+                let c = row[min(cols - 1, Int(Double(ox) / scale))]
+                guard c != UInt8(ascii: " ") else { continue }
+                let v: UInt8 = c == UInt8(ascii: "B") ? 0 : 255
+                let p = canvas + (py * width + px) * 4
+                p[0] = v; p[1] = v; p[2] = v; p[3] = 255
+            }
+        }
     }
 
     /// Nearest-pixel scale of the boot framebuffer into the canvas, letterboxed.

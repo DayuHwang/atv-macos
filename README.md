@@ -40,10 +40,14 @@
       tvOS device/App ID/profile, increased memory limit, hidden password; static exe from CI.
       (pc/sideloader, the earlier Sideloader `tvsign` patch, is kept for reference; its login fails.)
 - [x] `pc/atv_install.py`: UDID over the tunnel, atv-sign, install over RSD
-- [ ] First install and boot on the real Apple TV
+- [x] First install and boot on the real Apple TV (macOS 15.6.1 installed; boots past the
+      jetsam limit with file-backed guest RAM, 3072 MB / 4 CPUs / 256 MB JIT)
+- [x] `pc/atv_vnc.py` / `ATV-Mac-VNC.cmd`: opens TigerVNC Viewer (tools\TigerVNC-Viewer.exe)
+      already logged in (TigerVNC password file); the app paints the guest pointer into frames
 
 ## On the Windows PC (AppleTV-Windows-Lab folder)
 1. Put `ATVMac-unsigned.ipa` and `atv-sign.exe` in Downloads (or drag their folder in when asked).
 2. `ATV-Mac-Install.cmd`: type your Apple ID, password (hidden) and 2FA code when asked.
    Free Apple IDs sign for 7 days; run it again to renew.
 3. `ATV-Mac-Keeper.cmd`: keep it open. It shows the VNC address and password.
+4. `ATV-Mac-VNC.cmd`: opens the Mac in TigerVNC Viewer (F8 for the viewer menu).
