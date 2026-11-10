@@ -74,3 +74,47 @@ jobs:
         with:
           name: sideloader-tvos-exe
           path: bin/sideloader.exe
+
+  package:
+    # plist.dll and OpenSSL 3 beside sideloader.exe: what tvsign loads at run time
+    # (libimobiledevice is loaded only for USB installs, which tvsign never does).
+    needs: cli
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: sideloader-tvos-exe
+          path: out
+
+      - name: libplist and OpenSSL (vcpkg)
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install libplist:x64-windows openssl:x64-windows
+          $bin = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin"
+          Get-ChildItem $bin -Filter *.dll | Format-Table Name, Length
+          $plist = Get-ChildItem $bin -Filter "*plist*.dll" | Where-Object { $_.Name -notmatch "\+\+" } | Select-Object -First 1
+          if (-not $plist) { throw "no libplist DLL built" }
+          Copy-Item $plist.FullName out\plist.dll
+          Copy-Item "$bin\libssl-3-x64.dll", "$bin\libcrypto-3-x64.dll" out\
+          # DLLs the copied ones depend on (vcpkg builds zlib etc. as DLLs)
+          foreach ($d in Get-ChildItem $bin -Filter *.dll) {
+            if (-not (Test-Path "out\$($d.Name)") -and $d.Name -notmatch "plist") { Copy-Item $d.FullName out\ }
+          }
+          Get-ChildItem out | Format-Table Name, Length
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          Set-Location out
+          .\sideloader.exe version
+          .\sideloader.exe tvsign --help
+
+      - name: Zip
+        shell: pwsh
+        run: Compress-Archive -Path out\* -DestinationPath sideloader-tvos-win64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sideloader-tvos-win64
+          path: sideloader-tvos-win64.zip
