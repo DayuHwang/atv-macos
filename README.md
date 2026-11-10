@@ -31,6 +31,8 @@
       and the EDR log flag stubbed (unreachable on Apple TV)
 - [ ] Transport adapter to pymobiledevice3 debugproxy + DVT launch (needs the lab's installed version)
 - [ ] Storage capacity (64 or 128 GB)
-- [ ] tvOS app: headless shell, built-in RFB server (next)
+- [x] tvOS app (`tv/app`): unattended host, built-in VNC (RFB 3.3–3.8, Raw/ZRLE, VNC auth),
+      status page on :8080; CI builds an unsigned arm64 tvOS IPA
 - [ ] libslirp + glib for appletvos (guest networking)
-- [ ] Build (macOS + Xcode 27), sign, install, first boot
+- [ ] Sign with the owner's Apple ID (Impactor on Windows), install, first boot
+- [ ] Windows keeper: launch with debugger, service JIT, relaunch after install/shutdown
