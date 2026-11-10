@@ -302,26 +302,23 @@ async fn run(args: Args) -> Result<(), Error> {
         }
     }
 
-    // 4. the development profile for tvOS. How a tvOS profile is asked for is not
-    //    documented, so each known way is tried in this one session; the first profile
-    //    whose Platform is tvOS and that lists this Apple TV is used.
-    let candidates: [(&str, DeveloperDeviceType, Option<&str>); 5] = [
-        ("tvos/ path", DeveloperDeviceType::Tvos, None),
-        ("ios/ + DTDeviceClass=tvos", DeveloperDeviceType::Ios, Some("tvos")),
-        ("ios/ + DTDeviceClass=tvOS", DeveloperDeviceType::Ios, Some("tvOS")),
-        ("ios/ + DTDeviceClass=appletv", DeveloperDeviceType::Ios, Some("appletv")),
-        ("ios/ plain", DeveloperDeviceType::Ios, None),
+    // 4. the development profile for tvOS. The endpoint stays ios/ (there is no tvos/ one:
+    //    it 404s); the platform goes in the body. Without it Apple builds an iOS profile and,
+    //    with only an Apple TV on the team, answers 8220 "no devices". Both forms below were
+    //    tested against Apple by other projects (Impactor PR #226, Apparition 51f689a).
+    let candidates: [(&str, &[(&str, &str)]); 3] = [
+        ("DTDK_Platform=tvos + subPlatform=tvOS", &[("DTDK_Platform", "tvos"), ("subPlatform", "tvOS")]),
+        ("subPlatform=tvOS", &[("subPlatform", "tvOS")]),
+        ("DTDK_Platform=tvos", &[("DTDK_Platform", "tvos")]),
     ];
     let mut chosen: Option<Profile> = None;
     let mut fallback: Option<Profile> = None;
     println!("获取描述文件 / profiles:");
-    for (label, kind, class) in candidates {
+    for (label, params) in candidates {
         let mut extra = vec![("appIdId", app_id.app_id_id.as_str())];
-        if let Some(c) = class {
-            extra.push(("DTDeviceClass", c));
-        }
+        extra.extend_from_slice(params);
         let got: Result<Profile, _> = dev
-            .send_dev_request(&dev_url("downloadTeamProvisioningProfile", kind), body(&team, &extra), "provisioningProfile")
+            .send_dev_request(&dev_url("downloadTeamProvisioningProfile", ios()), body(&team, &extra), "provisioningProfile")
             .await;
         let profile = match got {
             Ok(p) => p,
