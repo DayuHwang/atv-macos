@@ -63,8 +63,10 @@ enum Storage {
         try? dir.setResourceValues(values)
         return dir
     }()
+    /// Free space on the app's volume (tvOS has no "important usage" capacity query).
     static var freeBytes: Int64 {
-        let v = try? root.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey])
-        return v?.volumeAvailableCapacityForImportantUsage ?? 0
+        var s = statfs()
+        guard statfs(root.path, &s) == 0 else { return 0 }
+        return Int64(s.f_bavail) * Int64(s.f_bsize)
     }
 }

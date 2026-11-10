@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // atv-macos: the tvOS app. Everything runs on its own from launch; the screen
 // (if a TV happens to be attached) only mirrors what the VNC card shows.
+import Combine
 import SwiftUI
 
 @main

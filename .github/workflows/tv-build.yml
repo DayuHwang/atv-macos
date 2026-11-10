@@ -38,12 +38,13 @@ jobs:
 
       - name: Build the tvOS app (unsigned)
         run: |
-          set -o pipefail
+          rc=0
           xcodebuild -project tv/app/ATVMac.xcodeproj -scheme ATVMac -configuration Release \
             -sdk appletvos -derivedDataPath build/dd \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build 2>&1 \
-            | tee build/xcodebuild.log | grep -E "error:|warning: .*(Sources|tv/)|BUILD (SUCCEEDED|FAILED)" || true
-          test -d build/dd/Build/Products/Release-appletvos/ATVMac.app
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build \
+            > build/xcodebuild.log 2>&1 || rc=$?
+          grep -E "error:|warning: .*(tv/app|tv/compat)|BUILD (SUCCEEDED|FAILED)" build/xcodebuild.log | sort -u | head -80 || true
+          exit $rc
 
       - name: Package the IPA
         run: |
