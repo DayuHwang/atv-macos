@@ -1,0 +1,57 @@
+name: Sideloader with tvsign (Windows)
+
+# Builds Dadoum/Sideloader's CLI for Windows with atv-macos's `tvsign` command
+# added (pc/sideloader). Upstream is pinned to the commit that was reviewed;
+# the build steps are upstream's own (cross-compiled with LDC on Ubuntu).
+
+on:
+  push:
+    paths:
+      - "pc/sideloader/**"
+      - ".github/workflows/sideloader-tvos.yml"
+  workflow_dispatch:
+
+env:
+  SIDELOADER_REF: 631abccace368ececbbd4ed82c35a245834e3af0
+
+jobs:
+  cli:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - name: Sideloader (pinned)
+        uses: actions/checkout@v4
+        with:
+          repository: Dadoum/Sideloader
+          ref: ${{ env.SIDELOADER_REF }}
+          submodules: recursive
+
+      - name: atv-macos patch
+        uses: actions/checkout@v4
+        with:
+          path: atv
+          sparse-checkout: pc/sideloader
+
+      - name: Add tvsign
+        run: python3 atv/pc/sideloader/patch.py .
+
+      - name: Update APT repos
+        run: sudo apt-get update
+
+      - name: Set-up D compiler
+        uses: ./.github/actions/setup-d-compiler
+        with:
+          target-triple: x86_64-windows-msvc
+
+      - name: Write version file
+        uses: ./.github/actions/write-version-file
+        with:
+          version-text: "Sideloader ${{ env.SIDELOADER_REF }} + atv-macos tvsign"
+
+      - name: Build
+        run: dub build -b release-debug --compiler=ldc2 --arch x86_64-windows-msvc :cli-frontend
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sideloader-tvos-exe
+          path: bin/sideloader.exe
