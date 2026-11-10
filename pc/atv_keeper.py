@@ -205,9 +205,61 @@ PHASES = {
 }
 
 
+# ---------------------------------------------------------------- evidence
+
+def app_log(host: str) -> str | None:
+    try:
+        with urllib.request.urlopen(f"http://{host}:8080/log", timeout=4) as r:
+            return r.read().decode("utf-8", "replace")
+    except Exception:
+        return None
+
+
+CRASH_KEYS = ("exception", "termination", "signal", "reason", "jetsam", "memorystatus",
+              "per-process-limit", "vm-pageshortage", "highwater", "fpm", "crashed", "faulting",
+              "atvmac", "\"type\"", "codes", "subtype", "largestprocess", "rpages", "lifetimemax")
+
+
+async def crash_reports(rsd, lab: Path, since: float) -> None:
+    """Pulls the app's crash reports and the system's memory (Jetsam) reports written since
+    `since`, and prints the lines that say why the app died."""
+    from pymobiledevice3.services.crash_reports import CrashReportsManager
+    out = lab / "data" / "crash"
+    out.mkdir(parents=True, exist_ok=True)
+    before = {p.name for p in out.rglob("*") if p.is_file()}
+    try:
+        async with CrashReportsManager(rsd) as crashes:
+            try:
+                await crashes.flush()
+            except Exception:
+                pass
+            await crashes.pull(str(out), match=r"(ATVMac|JetsamEvent)", progress_bar=False)
+    except Exception as e:
+        say(f"取崩溃报告失败：{type(e).__name__}: {e}")
+        return
+    files = sorted((p for p in out.rglob("*") if p.is_file() and p.stat().st_mtime >= since - 600),
+                   key=lambda p: p.stat().st_mtime)
+    fresh = [p for p in files if p.name not in before] or files[-4:]
+    if not fresh:
+        say("电视上没有找到 App 的崩溃报告或内存报告。")
+        return
+    for p in fresh[-4:]:
+        say(f"报告：{p.name}")
+        text = p.read_text(encoding="utf-8", errors="replace")
+        shown = 0
+        for line in text.splitlines():
+            low = line.lower()
+            if any(k in low for k in CRASH_KEYS):
+                print("     " + line.strip()[:220])
+                shown += 1
+                if shown >= 40:
+                    break
+    say(f"完整报告在 {out}")
+
+
 # ---------------------------------------------------------------- main loop
 
-async def keep(lab: Path, once: bool, diag: bool = False) -> None:
+async def keep(lab: Path, once: bool, diag: bool = False, crashes_only: bool = False) -> None:
     sys.path.insert(0, str(lab))
     import developer  # the lab's tunnel code
     developer.configure_library()
@@ -227,6 +279,9 @@ async def keep(lab: Path, once: bool, diag: bool = False) -> None:
                 if diag:
                     await diagnose(rsd, bundle, password, lab)
                     return
+                if crashes_only:
+                    await crash_reports(rsd, lab, time.time() - 6 * 3600)
+                    return
                 while True:
                     s = status(host)
                     pid = await running_pid(rsd, bundle)
@@ -244,7 +299,7 @@ async def keep(lab: Path, once: bool, diag: bool = False) -> None:
                     failures = 0
                     if once:
                         return
-                    await follow(rsd, bundle, host)
+                    await follow(rsd, bundle, host, lab)
         except Exception as e:
             failures += 1
             wait = min(10 * failures, 120)
@@ -252,10 +307,13 @@ async def keep(lab: Path, once: bool, diag: bool = False) -> None:
             await asyncio.sleep(wait)
 
 
-async def follow(rsd, bundle: str, host: str) -> None:
-    """Print phase changes; return when the app is gone so the loop relaunches it."""
+async def follow(rsd, bundle: str, host: str, lab: Path) -> None:
+    """Print phase changes and mirror the app's log; when the app is gone, keep its last
+    log and the crash/memory reports, then return so the loop relaunches it."""
     last = None
     misses = 0
+    started = time.time()
+    mirror = lab / "data" / "atv-app-current.log"
     while True:
         await asyncio.sleep(5)
         s = status(host)
@@ -267,10 +325,23 @@ async def follow(rsd, bundle: str, host: str) -> None:
             if line != last:
                 say(line)
                 last = line
+            log = app_log(host)
+            if log:
+                mirror.write_text(log, encoding="utf-8")
             continue
         misses += 1
         if misses >= 3 and not await running_pid(rsd, bundle):
-            say("App 已退出，重新拉起。")
+            say("App 已退出。")
+            if mirror.exists():
+                kept = lab / "data" / time.strftime("atv-app-exit-%H%M%S.log")
+                mirror.replace(kept)
+                tail = kept.read_text(encoding="utf-8", errors="replace").splitlines()[-25:]
+                say(f"App 最后的日志（完整的在 {kept}）：")
+                for t in tail:
+                    print("     " + t[:220])
+            await asyncio.sleep(3)
+            await crash_reports(rsd, lab, started)
+            say("重新拉起 App。")
             return
 
 
@@ -279,9 +350,10 @@ def main() -> None:
     ap.add_argument("--lab", type=Path, default=HERE.parent, help="AppleTV-Windows-Lab folder (default: parent folder)")
     ap.add_argument("--once", action="store_true", help="grant JIT once and exit instead of keeping the app alive")
     ap.add_argument("--diagnose", action="store_true", help="launch with the device log streaming and show why a launch fails")
+    ap.add_argument("--crashes", action="store_true", help="pull and summarise the app's recent crash and memory reports")
     args = ap.parse_args()
     try:
-        asyncio.run(keep(args.lab.resolve(), args.once, args.diagnose))
+        asyncio.run(keep(args.lab.resolve(), args.once, args.diagnose, args.crashes))
     except KeyboardInterrupt:
         pass
 
