@@ -3,9 +3,9 @@ install it on the Apple TV over the lab's developer connection.
 
   1. reads the Apple TV's UDID over the developer tunnel,
   2. unpacks ATVMac-unsigned.ipa,
-  3. runs Sideloader's `tvsign` (atv-macos build): you type your Apple ID,
-     password and the 2FA code in this window; it registers the Apple TV,
-     makes the tvOS development profile and signs the app,
+  3. runs atv-sign.exe: you type your Apple ID, password (not shown) and the 2FA
+     code in this window; it registers the Apple TV, makes the tvOS development
+     profile and signs the app,
   4. installs the signed app on the Apple TV.
 
 Free Apple IDs sign for 7 days: run this again within a week to renew.
@@ -28,6 +28,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 DOWNLOADS = Path(os.environ.get("USERPROFILE", str(Path.home()))) / "Downloads"
+TOOL = HERE / "atv-sign.exe"
 
 
 def say(text: str) -> None:
@@ -35,7 +36,7 @@ def say(text: str) -> None:
 
 
 def newest(patterns: list[str], folders: list[Path]) -> Path | None:
-    found = [p for folder in folders if folder.exists() for pat in patterns for p in folder.glob(pat)]
+    found = [p for folder in folders if folder and folder.exists() for pat in patterns for p in folder.glob(pat)]
     return max(found, key=lambda p: p.stat().st_mtime) if found else None
 
 
@@ -49,48 +50,30 @@ def ask_path(prompt: str) -> Path | None:
     return Path(text) if text else None
 
 
-def take_tool(src: Path, home: Path) -> bool:
-    """Copies the signing tool into atv-macos\\sideloader from a zip, a folder or sideloader.exe."""
-    if src.is_file() and src.name.lower() == "sideloader.exe":
-        src = src.parent
-    if src.is_dir() and not (src / "sideloader.exe").exists():
-        z = newest(["sideloader-tvos-win64*.zip"], [src])
-        if z is None:
-            return False
-        src = z
-    shutil.rmtree(home, ignore_errors=True)
-    if src.is_file() and src.suffix.lower() == ".zip":
-        say(f"解压签名工具：{src}")
-        with zipfile.ZipFile(src) as z:
-            z.extractall(home)
-    elif src.is_dir():
-        say(f"复制签名工具：{src}")
-        home.mkdir(parents=True)
-        for f in src.iterdir():
-            if f.is_file() and f.suffix.lower() in (".exe", ".dll"):
-                shutil.copy2(f, home / f.name)
-    else:
-        return False
-    return (home / "sideloader.exe").exists()
-
-
-def sideloader_exe(arg: Path | None) -> tuple[Path, Path | None]:
-    """The signing tool, and the folder it came from (the IPA is often beside it)."""
-    home = HERE / "sideloader"
-    exe = home / "sideloader.exe"
-    source = arg or newest(["sideloader-tvos-win64*.zip"], [HERE, DOWNLOADS])
-    if source is None and not exe.exists():
-        source = ask_path("没在“下载”里找到签名工具。把签名工具的文件夹（或 zip）拖进这个窗口，然后按回车：")
+def find_tool(arg: Path | None) -> tuple[Path, Path | None]:
+    """atv-sign.exe (copied beside this script), and the folder it came from."""
+    source = arg or newest(["atv-sign*.exe", "atv-sign*.zip"], [DOWNLOADS])
+    if source is None and not TOOL.exists():
+        source = ask_path("没在“下载”里找到 atv-sign.exe。把它（或它所在的文件夹）拖进这个窗口，然后按回车：")
     if source is not None:
-        if not source.exists() or not take_tool(source, home):
-            sys.exit(f"在 {source} 里没有找到签名工具（sideloader.exe 或 sideloader-tvos-win64.zip）。")
-    if not exe.exists():
-        sys.exit("找不到签名工具。")
-    for dll in ("plist.dll", "libssl-3-x64.dll", "libcrypto-3-x64.dll"):
-        if not (home / dll).exists():
-            sys.exit(f"签名工具缺少 {dll}，请重新下载 sideloader-tvos-win64.zip。")
-    folder = None if source is None else (source if source.is_dir() else source.parent)
-    return exe, folder
+        if source.is_dir():
+            source = newest(["atv-sign*.exe", "atv-sign*.zip"], [source]) or source
+        if source.is_file() and source.suffix.lower() == ".zip":
+            with zipfile.ZipFile(source) as z:
+                names = [n for n in z.namelist() if n.lower().endswith("atv-sign.exe")]
+                if not names:
+                    sys.exit(f"{source} 里没有 atv-sign.exe。")
+                TOOL.write_bytes(z.read(names[0]))
+        elif source.is_file() and source.suffix.lower() == ".exe":
+            if source.resolve() != TOOL.resolve():
+                shutil.copy2(source, TOOL)
+        else:
+            sys.exit(f"在 {source} 没有找到 atv-sign.exe。")
+        say(f"签名工具：{source}")
+    if not TOOL.exists():
+        sys.exit("找不到签名工具 atv-sign.exe。")
+    folder = None if source is None else source.parent
+    return TOOL, folder
 
 
 def unpack_ipa(ipa: Path) -> Path:
@@ -128,17 +111,16 @@ async def install(lab: Path, app: Path) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--lab", type=Path, default=HERE.parent)
-    ap.add_argument("--ipa", type=Path, help="ATVMac-unsigned.ipa (default: newest in Downloads or atv-macos)")
-    ap.add_argument("--sideloader", type=Path, help="the signing tool: its folder, sideloader.exe or sideloader-tvos-win64.zip")
+    ap.add_argument("--ipa", type=Path, help="ATVMac-unsigned.ipa (default: newest in Downloads, or beside atv-sign)")
+    ap.add_argument("--tool", type=Path, help="atv-sign.exe, its zip, or the folder holding it")
     args = ap.parse_args()
     lab = args.lab.resolve()
     sys.path.insert(0, str(lab))
     import developer
     developer.configure_library()
 
-    exe, tool_folder = sideloader_exe(args.sideloader)
-    places = [HERE, DOWNLOADS] + ([tool_folder] if tool_folder else [])
-    ipa = args.ipa or newest(["ATVMac-unsigned*.ipa"], places)
+    tool, tool_folder = find_tool(args.tool)
+    ipa = args.ipa or newest(["ATVMac-unsigned*.ipa"], [HERE, DOWNLOADS, tool_folder])
     if not ipa:
         picked = ask_path("没找到 ATVMac-unsigned.ipa。把它（或它所在的文件夹）拖进这个窗口，然后按回车：")
         if picked and picked.is_dir():
@@ -153,10 +135,8 @@ def main() -> None:
     say(f"Apple TV：{name}（{udid}）")
 
     app = unpack_ipa(ipa)
-    say(f"签名 {app.name}。接下来按提示输入 Apple ID、密码和双重认证验证码。")
-    say("注意：Sideloader 输入密码时会把密码显示在屏幕上，输入前确认旁边没人看。")
-    rc = subprocess.run([str(exe), "tvsign", "-i", "--udid", udid, "--name", name, str(app)],
-                        cwd=exe.parent).returncode
+    say("签名：接下来输入 Apple ID、密码（输入时不显示）和双重认证验证码。")
+    rc = subprocess.run([str(tool), "--udid", udid, "--name", name, str(app)]).returncode
     if rc != 0:
         sys.exit(f"签名没有成功（退出码 {rc}），上面的输出写了原因。")
     if not (app / "embedded.mobileprovision").exists() or not (app / "_CodeSignature").exists():

@@ -1,0 +1,39 @@
+name: atv-sign (Windows)
+
+# The signing tool the PC runs: one Apple ID login (anisette client info from a
+# server, so Apple accepts it), tvOS device registration, tvOS profile, signing.
+
+on:
+  push:
+    paths:
+      - "pc/atv-sign/**"
+      - ".github/workflows/atv-sign.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      # A self-contained exe: the C runtime linked in, nothing else to ship.
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: cargo build --release --locked --manifest-path pc/atv-sign/Cargo.toml
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $exe = "pc/atv-sign/target/release/atv-sign.exe"
+          & $exe --help
+          if ($LASTEXITCODE -ne 0) { throw "atv-sign --help exited $LASTEXITCODE" }
+          $deps = & "${env:VCToolsInstallDir}bin\Hostx64\x64\dumpbin.exe" /dependents $exe 2>$null
+          if ($deps) { $deps | Select-String "\.dll" }
+          (Get-Item $exe).Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: atv-sign-win64
+          path: pc/atv-sign/target/release/atv-sign.exe

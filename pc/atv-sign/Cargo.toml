@@ -1,0 +1,22 @@
+[package]
+name = "atv-sign"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-or-later"
+description = "Sign atv-macos for an Apple TV with a free Apple ID (tvOS development profile)"
+publish = false
+
+[dependencies]
+# Apple ID login with server-provided anisette client info (the -80045 fix) and the
+# developer-services API with a tvOS device type. Pinned to the reviewed commit. Default
+# features stay on (the crate does not build without "install"), but nothing here installs:
+# the PC installs over its own tunnel.
+isideload = { git = "https://github.com/nab138/isideload", rev = "326e56229d0727cb6e7b34c8cf03e37e2cd3e17d" }
+tokio = { version = "1.49", features = ["rt-multi-thread", "macros"] }
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+rpassword = "7"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+[profile.release]
+strip = true
