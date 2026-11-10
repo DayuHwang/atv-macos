@@ -77,7 +77,8 @@ struct PixelPacker {
     init(_ pf: PixelFormat) {
         self.pf = pf
         func table(_ max: UInt16, _ shift: UInt8) -> [UInt32] {
-            (0..<256).map { (UInt32($0) * UInt32(max) + 127) / 255 << UInt32(shift) }
+            // Swift's << binds tighter than * and /, so the scaling needs its own parentheses.
+            (0..<256).map { ((UInt32($0) * UInt32(max) + 127) / 255) << UInt32(shift) }
         }
         rT = table(pf.rMax, pf.rShift); gT = table(pf.gMax, pf.gShift); bT = table(pf.bMax, pf.bShift)
         isNative = pf == .native

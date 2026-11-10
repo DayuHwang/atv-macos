@@ -23,6 +23,9 @@ struct HostStatus: Codable {
     /// The VNC server's ZRLE works (older builds sent empty ZRLE rectangles,
     /// so the PC side strips ZRLE from what the viewer offers when this is missing).
     var vncZRLE = true
+    /// 2: ZRLE and non-native pixel formats keep all three colours (v7); the PC
+    /// relays older builds through Raw in the app's own format.
+    var vncRev = 2
     /// Where the guest says its pointer is (display pixels), when it says.
     var pointer: [Int]? = nil
 }

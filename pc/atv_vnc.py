@@ -6,10 +6,13 @@ keeper hands the app (data\\atv-macos.json), writes TigerVNC's password file
 The keeper (ATV-Mac-Keeper.cmd) must be running, since it is what keeps the
 app alive on the TV.
 
-App builds before v5 sent empty ZRLE rectangles, which TigerVNC (it always
-offers ZRLE) rejects by closing the connection. For those, the viewer is
-pointed at a small relay on this PC that removes ZRLE from the encodings the
-viewer offers, so the app answers in Raw. The relay runs without a window and
+App builds before v7 had two ZRLE bugs: v1-v4 sent empty ZRLE rectangles,
+which TigerVNC (it always offers ZRLE) rejects by closing the connection, and
+v5-v6 lost red and green in every pixel format but the app's own (ZRLE always
+packs through that path), so the picture came out blue. For those builds the
+viewer is pointed at a small relay on this PC that removes ZRLE from the
+encodings the viewer offers, so the app answers in Raw, and the viewer is
+held at full colour, the app's own format. The relay runs without a window and
 ends when the viewer is closed; it logs to data\\vnc-relay.log.
 """
 from __future__ import annotations
@@ -80,7 +83,8 @@ def tv_status(host: str) -> dict | None:
 
 
 def viewer_command(viewer: Path, lab: Path, password: str, target: str) -> list[str]:
-    cmd = [str(viewer), "-AlwaysCursor=1", "-PreferredEncoding=ZRLE"]
+    # Full colour, never switched down by bandwidth: 32-bit RGB888 is the app's own format.
+    cmd = [str(viewer), "-AlwaysCursor=1", "-PreferredEncoding=ZRLE", "-AutoSelect=0", "-FullColor=1"]
     if password:
         pw_file = lab / "data" / "vnc.passwd"
         pw_file.write_bytes(obfuscate(password))
@@ -266,7 +270,7 @@ def main() -> int:
     if status:
         say(f"电视上的状态：{status.get('phase', '?')}  {status.get('detail', '')}".rstrip())
 
-    if args.direct or status.get("vncZRLE"):
+    if args.direct or status.get("vncRev", 0) >= 2:   # ZRLE fixed in app v7
         cmd = viewer_command(viewer, lab, load_password(lab), f"{host}::{VNC_PORT}")
         subprocess.Popen(cmd, cwd=str(lab), creationflags=DETACHED, close_fds=True)
     else:
