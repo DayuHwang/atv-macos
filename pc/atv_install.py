@@ -39,21 +39,58 @@ def newest(patterns: list[str], folders: list[Path]) -> Path | None:
     return max(found, key=lambda p: p.stat().st_mtime) if found else None
 
 
-def sideloader_exe(zip_arg: Path | None) -> Path:
+def ask_path(prompt: str) -> Path | None:
+    """Asks for a path; dragging a file or folder onto the console window types it in."""
+    say(prompt)
+    try:
+        text = input("> ").strip().strip('"').strip()
+    except EOFError:
+        return None
+    return Path(text) if text else None
+
+
+def take_tool(src: Path, home: Path) -> bool:
+    """Copies the signing tool into atv-macos\\sideloader from a zip, a folder or sideloader.exe."""
+    if src.is_file() and src.name.lower() == "sideloader.exe":
+        src = src.parent
+    if src.is_dir() and not (src / "sideloader.exe").exists():
+        z = newest(["sideloader-tvos-win64*.zip"], [src])
+        if z is None:
+            return False
+        src = z
+    shutil.rmtree(home, ignore_errors=True)
+    if src.is_file() and src.suffix.lower() == ".zip":
+        say(f"解压签名工具：{src}")
+        with zipfile.ZipFile(src) as z:
+            z.extractall(home)
+    elif src.is_dir():
+        say(f"复制签名工具：{src}")
+        home.mkdir(parents=True)
+        for f in src.iterdir():
+            if f.is_file() and f.suffix.lower() in (".exe", ".dll"):
+                shutil.copy2(f, home / f.name)
+    else:
+        return False
+    return (home / "sideloader.exe").exists()
+
+
+def sideloader_exe(arg: Path | None) -> tuple[Path, Path | None]:
+    """The signing tool, and the folder it came from (the IPA is often beside it)."""
     home = HERE / "sideloader"
     exe = home / "sideloader.exe"
-    zip_path = zip_arg or newest(["sideloader-tvos-win64*.zip"], [HERE, DOWNLOADS])
-    if zip_path and (not exe.exists() or zip_path.stat().st_mtime > exe.stat().st_mtime):
-        say(f"解压签名工具：{zip_path}")
-        shutil.rmtree(home, ignore_errors=True)
-        with zipfile.ZipFile(zip_path) as z:
-            z.extractall(home)
+    source = arg or newest(["sideloader-tvos-win64*.zip"], [HERE, DOWNLOADS])
+    if source is None and not exe.exists():
+        source = ask_path("没在“下载”里找到签名工具。把签名工具的文件夹（或 zip）拖进这个窗口，然后按回车：")
+    if source is not None:
+        if not source.exists() or not take_tool(source, home):
+            sys.exit(f"在 {source} 里没有找到签名工具（sideloader.exe 或 sideloader-tvos-win64.zip）。")
     if not exe.exists():
-        sys.exit("找不到签名工具 sideloader-tvos-win64.zip（放进“下载”文件夹或 atv-macos 文件夹）。")
+        sys.exit("找不到签名工具。")
     for dll in ("plist.dll", "libssl-3-x64.dll", "libcrypto-3-x64.dll"):
         if not (home / dll).exists():
             sys.exit(f"签名工具缺少 {dll}，请重新下载 sideloader-tvos-win64.zip。")
-    return exe
+    folder = None if source is None else (source if source.is_dir() else source.parent)
+    return exe, folder
 
 
 def unpack_ipa(ipa: Path) -> Path:
@@ -92,17 +129,24 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--lab", type=Path, default=HERE.parent)
     ap.add_argument("--ipa", type=Path, help="ATVMac-unsigned.ipa (default: newest in Downloads or atv-macos)")
-    ap.add_argument("--sideloader", type=Path, help="sideloader-tvos-win64.zip (default: newest in Downloads or atv-macos)")
+    ap.add_argument("--sideloader", type=Path, help="the signing tool: its folder, sideloader.exe or sideloader-tvos-win64.zip")
     args = ap.parse_args()
     lab = args.lab.resolve()
     sys.path.insert(0, str(lab))
     import developer
     developer.configure_library()
 
-    exe = sideloader_exe(args.sideloader)
-    ipa = args.ipa or newest(["ATVMac-unsigned*.ipa"], [HERE, DOWNLOADS])
+    exe, tool_folder = sideloader_exe(args.sideloader)
+    places = [HERE, DOWNLOADS] + ([tool_folder] if tool_folder else [])
+    ipa = args.ipa or newest(["ATVMac-unsigned*.ipa"], places)
     if not ipa:
-        sys.exit("找不到 ATVMac-unsigned.ipa（放进“下载”文件夹或 atv-macos 文件夹）。")
+        picked = ask_path("没找到 ATVMac-unsigned.ipa。把它（或它所在的文件夹）拖进这个窗口，然后按回车：")
+        if picked and picked.is_dir():
+            picked = newest(["*.ipa"], [picked])
+        if not picked or not picked.is_file():
+            sys.exit("没有安装包，无法继续。")
+        ipa = picked
+    say(f"安装包：{ipa}")
 
     say("读取 Apple TV 的设备 ID…")
     udid, name = asyncio.run(apple_tv_udid(lab))
