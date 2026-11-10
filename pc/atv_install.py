@@ -94,12 +94,32 @@ async def apple_tv_udid(lab: Path) -> tuple[str, str]:
         return rsd.udid, conn.get("device_name") or "Apple TV"
 
 
+async def stop_running(rsd, proxy) -> None:
+    """An upgrade waits for the running copy to go away; stop it first."""
+    from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+    from pymobiledevice3.services.dvt.instruments.process_control import ProcessControl
+    apps = await proxy.get_apps(application_type="User")
+    ours = [b for b, info in apps.items() if info.get("CFBundleExecutable") == "ATVMac"]
+    if not ours:
+        return
+    try:
+        async with DvtProvider(rsd) as dvt, ProcessControl(dvt) as pc:
+            pid = await pc.process_identifier_for_bundle_identifier(ours[0])
+            if pid:
+                say(f"先关掉电视上正在运行的旧版（pid {pid}）…")
+                await pc.kill(pid)
+                await asyncio.sleep(2)
+    except Exception as e:
+        say(f"没能关掉旧版（{type(e).__name__}），继续安装。")
+
+
 async def install(lab: Path, app: Path) -> None:
     import developer
     from pymobiledevice3.services.installation_proxy import InstallationProxyService
     conn = json.loads((lab / "data" / "connection.json").read_text(encoding="utf-8"))
     async with developer.open_rsd(conn["pairing_identifier"], conn["host"]) as rsd:
         proxy = InstallationProxyService(lockdown=rsd)
+        await stop_running(rsd, proxy)
         await proxy.install_from_local(app)
         apps = await proxy.get_apps(application_type="User")
         ours = [b for b, info in apps.items() if info.get("CFBundleExecutable") == "ATVMac"]
