@@ -157,8 +157,11 @@ final class Host {
 
     private func install(_ config: inout MachineConfig) throws {
         set("installing", "Fetching the virtual Mac's boot ROM from Apple")
-        let romData = try BootROM.syncFile()
-        if !FileManager.default.fileExists(atPath: rom.path) { try FileManager.default.copyItem(at: romData, to: rom) }
+        if !FileManager.default.fileExists(atPath: rom.path) {
+            // Henge's BootROM.file() caches in Application Support, which tvOS apps may not
+            // write; download() returns the verified ROM and we keep it beside the disk.
+            try BootROM.syncDownload().write(to: rom, options: .atomic)
+        }
 
         set("installing", "Creating a 64 GB disk (sparse) and the auxiliary storage")
         try? FileManager.default.removeItem(at: disk)
@@ -267,12 +270,13 @@ struct HostError: LocalizedError {
 }
 
 extension BootROM {
-    /// The async fetch, waited for from the host thread.
-    static func syncFile() throws -> URL {
+    /// The async fetch (downloaded, unpacked and checked against its SHA-256), waited for
+    /// from the host thread.
+    static func syncDownload() throws -> Data {
         let sem = DispatchSemaphore(value: 0)
-        var result: Result<URL, Error> = .failure(HostError("no result"))
+        var result: Result<Data, Error> = .failure(HostError("no result"))
         Task.detached {
-            do { result = .success(try await BootROM.file()) } catch { result = .failure(error) }
+            do { result = .success(try await BootROM.download()) } catch { result = .failure(error) }
             sem.signal()
         }
         sem.wait()
