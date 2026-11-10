@@ -28,6 +28,8 @@ struct HostStatus: Codable {
     var vncRev = 2
     /// Where the guest says its pointer is (display pixels), when it says.
     var pointer: [Int]? = nil
+    /// The Apple TV's memory and paging, refreshed with the [memory] log line.
+    var memory = ""
 }
 
 struct MachineConfig: Codable {
@@ -199,7 +201,7 @@ final class Host {
         guard henge_make_aux(aux.path) == 0 else { throw HostError("Cannot create the auxiliary storage.") }
 
         // The restore system fills whatever memory it gets with cache; 2 GB is what it needs.
-        let ram = guestMemory(asked: 2048)
+        let ram = guestMemory(asked: 2048, mode: "file")
         setenv("HV_WRITE_CACHE", "0", 1)
         let work = Storage.machine.appendingPathComponent("restore", isDirectory: true)
         try? FileManager.default.createDirectory(at: work, withIntermediateDirectories: true)
@@ -249,7 +251,8 @@ final class Host {
 
     private func boot(_ config: MachineConfig) throws {
         set("booting", "Starting the Mac")
-        let ram = guestMemory(asked: UInt64(Host.env("ATV_RAM_MB") ?? 3072))
+        let ram = guestMemory(asked: UInt64(Host.env("ATV_RAM_MB") ?? 2048),
+                              mode: ProcessInfo.processInfo.environment["ATV_RAM_MODE"] ?? "anon")
         let cpus = Int32(min(6, max(1, Host.env("ATV_CPUS") ?? Int(config.cpus))))
         henge_vm_set_display(config.width, config.height)
         henge_vm_set_display_mm(0, 0)
@@ -259,24 +262,30 @@ final class Host {
         }
         lock.lock(); _status.guestRAMMB = ram; lock.unlock()
         set("running", "\(ram) MB, \(cpus) CPUs, \(config.width)x\(config.height)")
+        HostMemory.startLogging(every: Host.env("ATV_MEMLOG") ?? 30) { [weak self] line in
+            guard let self else { return }
+            self.lock.lock(); self._status.memory = line; self.lock.unlock()
+        }
     }
 
-    /// Guest RAM: kept out of the app's memory limit once a debugger has attached,
-    /// otherwise backed by a file on storage, which the limit does not count either.
-    private func guestMemory(asked: UInt64) -> UInt64 {
+    /// Guest RAM, by ATV_RAM_MODE (the PC side sets it; no reinstall to change it):
+    /// - "anon" (default): Henge's anonymous memory kept off the app's footprint ledger.
+    ///   Fast; under pressure tvOS compresses it. At 4 GB of guest RAM the compressor
+    ///   filled and the system killed us (vm-compressor-space-shortage); 2 GB leaves room.
+    ///   If the kernel refuses it, the file below is used instead.
+    /// - "file": a MAP_SHARED file the kernel can write out and drop. Survives more memory
+    ///   pressure, but every first touch and every page brought back is flash I/O: with
+    ///   3 GB the guest ran about 20 thousand blocks a second.
+    /// - "file-prefault": the file, with a background thread touching every page early.
+    private func guestMemory(asked: UInt64, mode: String) -> UInt64 {
         setenv("HV_RAM_FILE", Storage.machine.appendingPathComponent("ram.tmp").path, 1)
-        // Henge first asks for anonymous memory kept off the app's footprint ledger. That keeps
-        // jetsam's per-app limit away on an iPhone, but on a 4 GB Apple TV the pages are still
-        // physical: the compressor filled and the system killed us (vm-compressor-space-shortage).
-        // A MAP_SHARED file instead lets the kernel write guest pages out and drop them.
-        // Not prefaulted: touching all of it at boot would push everything else out at once.
-        setenv("HV_RAM_NO_LEDGER", "1", 1)
-        setenv("HV_RAM_NO_PREFAULT", "1", 1)
+        if mode == "anon" { unsetenv("HV_RAM_NO_LEDGER") } else { setenv("HV_RAM_NO_LEDGER", "1", 1) }
+        if mode == "file-prefault" { unsetenv("HV_RAM_NO_PREFAULT") } else { setenv("HV_RAM_NO_PREFAULT", "1", 1) }
         let free = Storage.freeBytes
         let room = free > (2 << 30) ? UInt64(free - (2 << 30)) >> 20 : 0
         let reach = henge_largest_mapping_mb()
         let ram = min(asked, room, reach > 512 ? reach - 512 : 0) / 512 * 512
-        Log.line("memory", "guest RAM \(ram) MB (asked \(asked), storage room \(room), largest mapping \(reach), "
+        Log.line("memory", "guest RAM \(ram) MB, mode \(mode) (asked \(asked), storage room \(room), largest mapping \(reach), "
                  + "available before jetsam \(henge_available_memory() >> 20) MB)")
         return ram
     }
@@ -315,5 +324,72 @@ extension BootROM {
         }
         sem.wait()
         return try result.get()
+    }
+}
+
+
+// MARK: - Host memory
+
+/// Logs the Apple TV's memory every few seconds: what is free, what the compressor
+/// holds, paging to and from storage, and this app's footprint. This is what decides
+/// guest RAM size and ATV_RAM_MODE.
+enum HostMemory {
+    private static var timer: DispatchSourceTimer?
+
+    struct Sample {
+        var free: UInt64 = 0, compressed: UInt64 = 0, pageins: UInt64 = 0, pageouts: UInt64 = 0
+        var compressions: UInt64 = 0, decompressions: UInt64 = 0, faults: UInt64 = 0
+    }
+
+    static func sample() -> Sample? {
+        var s = vm_statistics64_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.stride / MemoryLayout<integer_t>.stride)
+        let kr = withUnsafeMutablePointer(to: &s) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return nil }
+        let page = UInt64(vm_kernel_page_size)
+        return Sample(free: UInt64(s.free_count) * page, compressed: UInt64(s.compressor_page_count) * page,
+                      pageins: UInt64(s.pageins), pageouts: UInt64(s.pageouts),
+                      compressions: UInt64(s.compressions), decompressions: UInt64(s.decompressions),
+                      faults: UInt64(s.faults))
+    }
+
+    static func footprint() -> UInt64 {
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.stride / MemoryLayout<natural_t>.stride)
+        let kr = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        return kr == KERN_SUCCESS ? UInt64(info.phys_footprint) : 0
+    }
+
+    static func startLogging(every seconds: Int, update: @escaping (String) -> Void) {
+        guard seconds > 0, timer == nil, var last = sample() else { return }
+        var lastTime = Date()
+        let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        t.schedule(deadline: .now() + .seconds(seconds), repeating: .seconds(seconds))
+        t.setEventHandler {
+            guard let now = sample() else { return }
+            let dt = max(0.001, Date().timeIntervalSince(lastTime))
+            func rate(_ a: UInt64, _ b: UInt64) -> Int { Int(Double(a &- b) / dt) }
+            let mb = { (b: UInt64) in b >> 20 }
+            let line = "free \(mb(now.free)) MB, compressed \(mb(now.compressed)) MB, "
+                + "page-ins \(rate(now.pageins, last.pageins))/s, page-outs \(rate(now.pageouts, last.pageouts))/s, "
+                + "compressions \(rate(now.compressions, last.compressions))/s, "
+                + "decompressions \(rate(now.decompressions, last.decompressions))/s, "
+                + "faults \(rate(now.faults, last.faults))/s; app footprint \(mb(footprint())) MB, "
+                + "before jetsam \(henge_available_memory() >> 20) MB"
+            Log.line("memory", line)
+            update(line)
+            last = now
+            lastTime = Date()
+        }
+        t.resume()
+        timer = t
     }
 }

@@ -44,7 +44,7 @@ def say(text: str) -> None:
 def load_settings(lab: Path) -> dict:
     path = lab / "data" / "atv-macos.json"
     settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    for key, default in (("ram_mb", 3072), ("cpus", 4), ("jit_mb", 256)):
+    for key, default in (("ram_mb", 2048), ("cpus", 4), ("jit_mb", 256)):
         settings.setdefault(key, default)
     # Extra environment for the app; HV_STATS makes the engine log its speed every N seconds.
     settings.setdefault("env", {"HV_STATS": "30"})
