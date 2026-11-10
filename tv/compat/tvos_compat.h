@@ -27,6 +27,14 @@ int atv_sigaltstack(const stack_t *ss, stack_t *oss);
 pid_t atv_fork(void);
 #define fork atv_fork
 
+/* Henge's JIT allocator asks the kernel directly whether a debugger is attached
+   (syscall 169, csops), past any libc hook. tvOS forbids syscall(); each number
+   used gets its own direct implementation, so an unexpected one fails to build
+   instead of misbehaving at run time. */
+#include <stddef.h>
+int atv_syscall_169(int pid, unsigned int ops, void *useraddr, size_t usersize);
+#define syscall(nr, ...) atv_syscall_##nr(__VA_ARGS__)
+
 /* idevicerestore spawns `sudo launchctl` to pause macOS's deviceinterfaced
    before restoring a real USB device. A virtual Mac's restore runs over
    Henge's virtual USB link, so this is never needed on Apple TV. */

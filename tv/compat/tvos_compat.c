@@ -38,6 +38,22 @@ int atv_sigaltstack(const stack_t *ss, stack_t *oss) {
     return 0;
 }
 
+/* csops(pid, ops, useraddr, usersize) as a direct system call. */
+int atv_syscall_169(int pid, unsigned int ops, void *useraddr, size_t usersize) {
+    register long x0 __asm__("x0") = pid;
+    register long x1 __asm__("x1") = ops;
+    register long x2 __asm__("x2") = (long)useraddr;
+    register long x3 __asm__("x3") = (long)usersize;
+    register long x16 __asm__("x16") = 169;
+    long failed;
+    __asm__ volatile("svc #0x80\n\tcset %1, cs"
+                     : "+r"(x0), "=r"(failed)
+                     : "r"(x1), "r"(x2), "r"(x3), "r"(x16)
+                     : "memory", "cc");
+    if (failed) { errno = (int)x0; return -1; }
+    return (int)x0;
+}
+
 pid_t atv_fork(void) {
     errno = ENOSYS;
     return -1;
