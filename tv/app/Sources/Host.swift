@@ -23,6 +23,8 @@ struct HostStatus: Codable {
     /// The VNC server's ZRLE works (older builds sent empty ZRLE rectangles,
     /// so the PC side strips ZRLE from what the viewer offers when this is missing).
     var vncZRLE = true
+    /// Where the guest says its pointer is (display pixels), when it says.
+    var pointer: [Int]? = nil
 }
 
 struct MachineConfig: Codable {
@@ -61,6 +63,7 @@ final class Host {
         if henge_vm_state() == 1 {
             s.cpusOn = henge_vm_cpus_on()
             s.gpuFrames = henge_vm_gpu_frames()
+            s.pointer = Pointer.shared.position.map { [$0.x, $0.y] }
         }
         return s
     }

@@ -269,52 +269,113 @@ enum ScreenSource {
 
 // MARK: - The guest's pointer
 
-/// VNC pointers are absolute; the virtual Mac's mouse is relative and macOS
-/// accelerates it. Each move is corrected against where the guest says its
-/// pointer is, a few times, until it lands on the viewer's position.
+/// VNC pointers are absolute; the virtual Mac's mouse is relative, macOS
+/// accelerates it, and the emulated guest reports where its pointer is only
+/// some time after each move. So the pointer is walked to each position in
+/// small steps, the next step sent once the guest has shown the last one (or
+/// after a short wait), as Henge's own autopilot does. Button and wheel
+/// changes wait until the pointer has arrived, so clicks land where the
+/// viewer clicked. Moves that arrive while walking only update the target.
 final class Pointer {
     static let shared = Pointer()
     private let queue = DispatchQueue(label: "atv.pointer")
-    private var target = (x: 0, y: 0), estimate = (x: 0, y: 0), mask: UInt8 = 0, corrections = 0
+    private struct Event { var x: Int, y: Int, mask: UInt8 }
+    private var pending: [Event] = []
+    private var mask: UInt8 = 0
+    private var estimate = (x: 0, y: 0)           // dead reckoning while the guest reports nothing
+    private var lastStep: (at: (x: Int, y: Int), time: DispatchTime)? = nil
+    private var eventStart = DispatchTime.now()
+    private var holdUntil = DispatchTime.now()
     private var timer: DispatchSourceTimer?
+    private var knownLogged: Bool? = nil
+
+    static let maxStep = 24          // before macOS acceleration
+    static let arrived = 2           // pixels
+    static let guestWait = 0.15      // seconds to wait for the guest to show a step
+    static let giveUp = 3.0          // seconds per event before buttons are applied anyway
+
+    /// Where the guest says its pointer is, for /status.
+    var position: (x: Int, y: Int)? {
+        var x: Int32 = 0, y: Int32 = 0
+        return henge_vm_pointer(&x, &y) == 0 ? (Int(x), Int(y)) : nil
+    }
 
     func update(mask newMask: UInt8, x: Int, y: Int) {
         queue.async { [self] in
-            // buttons: VNC bit 0 left, 1 middle, 2 right -> engine 0 left, 2 middle, 1 right
-            for (bit, button) in [(0, 0), (1, 2), (2, 1)] as [(UInt8, Int32)] {
-                let was = mask & (1 << bit) != 0, now = newMask & (1 << bit) != 0
-                if was != now { henge_vm_mouse_button(button, now ? 1 : 0) }
+            // A pure move (same buttons as before it) is replaced by a newer one; a button
+            // change keeps its own position, so the click lands where it was made.
+            let before = pending.count >= 2 ? pending[pending.count - 2].mask : mask
+            if let last = pending.last, last.mask == newMask, last.mask == before {
+                pending[pending.count - 1] = Event(x: x, y: y, mask: newMask)
+            } else {
+                if pending.isEmpty { eventStart = .now() }
+                pending.append(Event(x: x, y: y, mask: newMask))
             }
-            // wheel: bits 3 up, 4 down, 5 left, 6 right; one step per press
-            for (bit, dx, dy) in [(3, 0, 1), (4, 0, -1), (5, -1, 0), (6, 1, 0)] as [(UInt8, Int32, Int32)] {
-                if newMask & (1 << bit) != 0, mask & (1 << bit) == 0 { henge_vm_mouse_scroll(dx, dy) }
-            }
-            mask = newMask
-            target = (x, y)
-            corrections = 0
-            nudge()
+            startTimer()
         }
     }
 
-    private func nudge() {
-        var cx: Int32 = 0, cy: Int32 = 0
-        let known = henge_vm_pointer(&cx, &cy) == 0
-        let from = known ? (x: Int(cx), y: Int(cy)) : estimate
-        let dx = max(-200, min(200, target.x - from.x)), dy = max(-200, min(200, target.y - from.y))
-        guard dx != 0 || dy != 0 else { return }
-        henge_vm_mouse_move(Int32(dx), Int32(dy))
-        estimate = (from.x + dx, from.y + dy)
-        corrections += 1
-        if corrections < 8 { schedule() }
-    }
-
-    private func schedule() {
-        timer?.cancel()
+    private func startTimer() {
+        guard timer == nil else { return }
         let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now() + .milliseconds(30))
-        t.setEventHandler { [weak self] in self?.nudge() }
+        t.schedule(deadline: .now(), repeating: .milliseconds(12))
+        t.setEventHandler { [weak self] in self?.tick() }
         t.resume()
         timer = t
+    }
+
+    private func seconds(since t: DispatchTime) -> Double {
+        Double(DispatchTime.now().uptimeNanoseconds &- t.uptimeNanoseconds) / 1e9
+    }
+
+    private func tick() {
+        guard let ev = pending.first else { timer?.cancel(); timer = nil; return }
+        guard DispatchTime.now() >= holdUntil else { return }
+        var gx: Int32 = 0, gy: Int32 = 0
+        let known = henge_vm_pointer(&gx, &gy) == 0
+        if knownLogged != known {
+            knownLogged = known
+            Log.line("vnc", known ? "guest reports its pointer: closed-loop pointing" : "guest pointer unknown: dead reckoning")
+        }
+        let at = known ? (x: Int(gx), y: Int(gy)) : estimate
+        let ex = ev.x - at.x, ey = ev.y - at.y
+        if (abs(ex) <= Self.arrived && abs(ey) <= Self.arrived) || seconds(since: eventStart) > Self.giveUp {
+            applyButtons(ev.mask)
+            pending.removeFirst()
+            eventStart = .now()
+            lastStep = nil
+            return
+        }
+        if known, let last = lastStep, last.at == at, seconds(since: last.time) < Self.guestWait {
+            return   // the guest has not shown the last step yet
+        }
+        let sx = step(ex), sy = step(ey)
+        henge_vm_mouse_move(Int32(sx), Int32(sy))
+        lastStep = (at, .now())
+        estimate = (min(max(at.x + sx, 0), 4095), min(max(at.y + sy, 0), 4095))
+    }
+
+    /// Big errors get full steps; small ones a bit less than the error, as macOS
+    /// still accelerates slow moves a little.
+    private func step(_ e: Int) -> Int {
+        guard e != 0 else { return 0 }
+        let size = abs(e) > Self.maxStep ? Self.maxStep : max(1, abs(e) * 2 / 3)
+        return e > 0 ? size : -size
+    }
+
+    private func applyButtons(_ newMask: UInt8) {
+        guard newMask != mask else { return }
+        // buttons: VNC bit 0 left, 1 middle, 2 right -> engine 0 left, 2 middle, 1 right
+        for (bit, button) in [(0, 0), (1, 2), (2, 1)] as [(UInt8, Int32)] {
+            let was = mask & (1 << bit) != 0, now = newMask & (1 << bit) != 0
+            if was != now { henge_vm_mouse_button(button, now ? 1 : 0) }
+        }
+        // wheel: bits 3 up, 4 down, 5 left, 6 right; one step per press
+        for (bit, dx, dy) in [(3, 0, 1), (4, 0, -1), (5, -1, 0), (6, 1, 0)] as [(UInt8, Int32, Int32)] {
+            if newMask & (1 << bit) != 0, mask & (1 << bit) == 0 { henge_vm_mouse_scroll(dx, dy) }
+        }
+        mask = newMask
+        holdUntil = .now() + .milliseconds(60)   // let the guest see a press before the release
     }
 }
 
