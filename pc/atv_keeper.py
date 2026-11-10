@@ -78,12 +78,70 @@ async def running_pid(rsd, bundle_id: str) -> int:
             return 0
 
 
-async def launch_suspended(rsd, bundle_id: str, password: str) -> int:
+async def launch(rsd, bundle_id: str, password: str, suspended: bool = True) -> int:
     from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
     from pymobiledevice3.services.dvt.instruments.process_control import ProcessControl
     async with DvtProvider(rsd) as dvt, ProcessControl(dvt) as pc:
-        return await pc.launch(bundle_id, kill_existing=True, start_suspended=True,
+        return await pc.launch(bundle_id, kill_existing=True, start_suspended=suspended,
                                environment={"ATV_VNC_PASSWORD": password})
+
+
+async def launch_for_jit(rsd, bundle_id: str, password: str) -> int:
+    """Suspended launch first (the debugger is there before the app runs). If tvOS
+    refuses that, a normal launch works too: the app waits for a debugger anyway."""
+    try:
+        return await launch(rsd, bundle_id, password, suspended=True)
+    except Exception as e:
+        say(f"挂起启动被拒（{first_line(e)}），改用正常启动后再挂接。")
+    pid = await launch(rsd, bundle_id, password, suspended=False)
+    await asyncio.sleep(1)
+    return pid
+
+
+def first_line(e: Exception) -> str:
+    text = str(e)
+    for key in ("NSLocalizedFailureReason': '", "NSLocalizedDescription': '"):
+        if key in text:
+            return text.split(key, 1)[1].split("'", 1)[0]
+    return text.splitlines()[0][:200] if text else type(e).__name__
+
+
+DIAG_KEYS = ("atvmac", "85f2xjxdth", "amfi", "installd", "pineboard", "frontboard", "runningboard",
+             "codesign", "code signature", "provision", "profile", "trust", "developer mode", "dyld",
+             "xpcproxy", "launchd", "sleep", "wake", "denied", "not permitted")
+
+
+async def diagnose(rsd, bundle_id: str, password: str, lab: Path) -> None:
+    """Launch with the device log streaming, and show the lines that explain the outcome."""
+    from pymobiledevice3.services.os_trace import OsTraceService
+    every: list[str] = []
+    hits: list[str] = []
+
+    async def collect():
+        svc = OsTraceService(lockdown=rsd)
+        async for e in svc.syslog():
+            name = (e.filename or "").rsplit("/", 1)[-1]
+            line = f"{e.timestamp:%H:%M:%S} {name}[{e.pid}] {e.message}"
+            every.append(line)
+            if any(k in line.lower() for k in DIAG_KEYS):
+                hits.append(line)
+
+    task = asyncio.create_task(collect())
+    await asyncio.sleep(2)
+    for suspended in (True, False):
+        try:
+            pid = await launch(rsd, bundle_id, password, suspended)
+            say(f"诊断：{'挂起' if suspended else '正常'}启动成功，pid {pid}")
+        except Exception as e:
+            say(f"诊断：{'挂起' if suspended else '正常'}启动失败：{first_line(e)}")
+        await asyncio.sleep(5)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    out = lab / "data" / "atv-launch-diagnose.log"
+    out.write_text("\n".join(every), encoding="utf-8")
+    say(f"相关日志（共 {len(hits)} 行，完整日志 {len(every)} 行已存到 {out}）：")
+    for line in hits[-80:]:
+        print("   " + line[:300])
 
 
 @asynccontextmanager
@@ -149,7 +207,7 @@ PHASES = {
 
 # ---------------------------------------------------------------- main loop
 
-async def keep(lab: Path, once: bool) -> None:
+async def keep(lab: Path, once: bool, diag: bool = False) -> None:
     sys.path.insert(0, str(lab))
     import developer  # the lab's tunnel code
     developer.configure_library()
@@ -166,6 +224,9 @@ async def keep(lab: Path, once: bool) -> None:
                     say("电视上还没有安装 atv-macos App。先用 Impactor 签名安装，再运行本程序。")
                     return
                 say(f"找到 App：{bundle}")
+                if diag:
+                    await diagnose(rsd, bundle, password, lab)
+                    return
                 while True:
                     s = status(host)
                     pid = await running_pid(rsd, bundle)
@@ -173,8 +234,8 @@ async def keep(lab: Path, once: bool) -> None:
                         say("App 已在运行、正等 JIT，直接挂接。")
                         ok = await grant_jit(rsd, pid)
                     elif not pid:
-                        say("启动 App（挂起状态）…")
-                        pid = await launch_suspended(rsd, bundle, password)
+                        say("启动 App…")
+                        pid = await launch_for_jit(rsd, bundle, password)
                         ok = await grant_jit(rsd, pid)
                     else:
                         ok = True
@@ -217,9 +278,10 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--lab", type=Path, default=HERE.parent, help="AppleTV-Windows-Lab folder (default: parent folder)")
     ap.add_argument("--once", action="store_true", help="grant JIT once and exit instead of keeping the app alive")
+    ap.add_argument("--diagnose", action="store_true", help="launch with the device log streaming and show why a launch fails")
     args = ap.parse_args()
     try:
-        asyncio.run(keep(args.lab.resolve(), args.once))
+        asyncio.run(keep(args.lab.resolve(), args.once, args.diagnose))
     except KeyboardInterrupt:
         pass
 
