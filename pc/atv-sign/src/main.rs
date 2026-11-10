@@ -19,14 +19,16 @@ use std::io::{self, Write};
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use plist::{Dictionary, Value};
+
 use isideload::{
     anisette::remote_v3::RemoteV3AnisetteProvider,
     auth::apple_account::{AppleAccount, TwoFactorCallbackParams, TwoFactorCallbackResponse},
     dev::{
-        app_ids::AppIdsApi,
+        app_ids::{AppIdsApi, Profile},
         certificates::DevelopmentCertificate,
         developer_session::DeveloperSession,
-        device_type::DeveloperDeviceType,
+        device_type::{DeveloperDeviceType, dev_url},
         devices::DevicesApi,
         teams::{DeveloperTeam, TeamsApi},
     },
@@ -110,6 +112,41 @@ async fn main() -> ExitCode {
 
 type Error = Box<dyn std::fmt::Display>;
 
+/// A developer-services request body: the team plus extra string fields.
+fn body(team: &DeveloperTeam, extra: &[(&str, &str)]) -> Dictionary {
+    let mut d = Dictionary::new();
+    d.insert("teamId".into(), Value::String(team.team_id.clone()));
+    for (k, v) in extra {
+        d.insert((*k).into(), Value::String((*v).to_string()));
+    }
+    d
+}
+
+fn str_field(d: &Dictionary, key: &str) -> String {
+    d.get(key).and_then(Value::as_string).unwrap_or_default().to_string()
+}
+
+fn first_line(s: &str) -> String {
+    s.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim().trim_start_matches('●').trim().to_string()
+}
+
+/// The Platform list of a provisioning profile and whether it lists the UDID. The
+/// profile is a CMS-signed plist; the XML sits in it as plain bytes.
+fn inspect(profile: &[u8], udid: &str) -> (Vec<String>, bool) {
+    let start = profile.windows(5).position(|w| w == b"<?xml");
+    let end = profile.windows(8).rposition(|w| w == b"</plist>");
+    let (Some(s), Some(e)) = (start, end) else { return (vec![], false) };
+    let Ok(dict) = plist::from_bytes::<Dictionary>(&profile[s..e + 8]) else { return (vec![], false) };
+    let strings = |key: &str| -> Vec<String> {
+        dict.get(key)
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(Value::as_string).map(str::to_string).collect())
+            .unwrap_or_default()
+    };
+    let lists = strings("ProvisionedDevices").iter().any(|d| d.eq_ignore_ascii_case(udid));
+    (strings("Platform"), lists)
+}
+
 fn fail<E: std::fmt::Display + 'static>(what: &'static str) -> impl FnOnce(E) -> Error {
     move |e| Box::new(format!("{what}: {e}"))
 }
@@ -181,11 +218,22 @@ async fn run(args: Args) -> Result<(), Error> {
     .ok_or_else(|| -> Error { Box::new("no matching development team") })?;
     println!("开发团队 / team: {} ({})", team.name.as_deref().unwrap_or("Personal Team"), team.team_id);
 
-    // 1. the Apple TV as a tvOS development device
-    dev.ensure_device_registered(&team, &args.name, &args.udid, DeveloperDeviceType::Tvos)
+    // 1. the Apple TV as a development device. There is no tvos/ device list (it 404s):
+    //    Apple TVs live in the same list as iPhones, told apart by their deviceClass.
+    let ios = || DeveloperDeviceType::Ios;
+    dev.ensure_device_registered(&team, &args.name, &args.udid, ios())
         .await
         .map_err(fail("register the Apple TV"))?;
-    println!("Apple TV 已登记为开发设备 / registered: {}", args.udid);
+    let devices: Vec<Dictionary> = dev
+        .send_dev_request(&dev_url("listDevices", ios()), body(&team, &[]), "devices")
+        .await
+        .map_err(fail("list devices"))?;
+    let class = devices
+        .iter()
+        .find(|d| str_field(d, "deviceNumber").eq_ignore_ascii_case(&args.udid))
+        .map(|d| str_field(d, "deviceClass"))
+        .unwrap_or_default();
+    println!("Apple TV 已登记为开发设备 / registered: {} (deviceClass: {class})", args.udid);
 
     // 2. the development certificate; when the account is at its limit, ask which to revoke
     let storage = KeyringStorage::new("atv-macos".to_string());
@@ -229,17 +277,17 @@ async fn run(args: Args) -> Result<(), Error> {
     };
     app.update_bundle_id(&bundle_id, &app_id_str).map_err(fail("rename the bundle"))?;
 
-    let tvos = || DeveloperDeviceType::Tvos;
-    let mut ids = dev.list_app_ids(&team, tvos()).await.map_err(fail("list App IDs"))?;
+    // App IDs are shared by all platforms; the ios/ endpoints are the ones that exist.
+    let mut ids = dev.list_app_ids(&team, ios()).await.map_err(fail("list App IDs"))?;
     if !ids.app_ids.iter().any(|a| a.identifier == app_id_str) {
         if ids.available_quantity.is_some_and(|n| n <= 0) {
             return Err(Box::new("这个 Apple ID 本周的 App ID 名额用完了（免费账号每 7 天 10 个）。"));
         }
         println!("创建 App ID / creating App ID {app_id_str}");
-        dev.add_app_id(&team, "atvmacos", &app_id_str, tvos())
+        dev.add_app_id(&team, "atvmacos", &app_id_str, ios())
             .await
             .map_err(fail("create the App ID"))?;
-        ids = dev.list_app_ids(&team, tvos()).await.map_err(fail("list App IDs"))?;
+        ids = dev.list_app_ids(&team, ios()).await.map_err(fail("list App IDs"))?;
     }
     let app_id = ids
         .app_ids
@@ -254,12 +302,56 @@ async fn run(args: Args) -> Result<(), Error> {
         }
     }
 
-    // 4. the tvOS development profile, which lists the registered Apple TV
-    let profile = dev
-        .download_team_provisioning_profile(&team, &app_id, tvos())
-        .await
-        .map_err(fail("download the tvOS profile"))?;
-    println!("tvOS 描述文件 / profile: {}", profile.name);
+    // 4. the development profile for tvOS. How a tvOS profile is asked for is not
+    //    documented, so each known way is tried in this one session; the first profile
+    //    whose Platform is tvOS and that lists this Apple TV is used.
+    let candidates: [(&str, DeveloperDeviceType, Option<&str>); 5] = [
+        ("tvos/ path", DeveloperDeviceType::Tvos, None),
+        ("ios/ + DTDeviceClass=tvos", DeveloperDeviceType::Ios, Some("tvos")),
+        ("ios/ + DTDeviceClass=tvOS", DeveloperDeviceType::Ios, Some("tvOS")),
+        ("ios/ + DTDeviceClass=appletv", DeveloperDeviceType::Ios, Some("appletv")),
+        ("ios/ plain", DeveloperDeviceType::Ios, None),
+    ];
+    let mut chosen: Option<Profile> = None;
+    let mut fallback: Option<Profile> = None;
+    println!("获取描述文件 / profiles:");
+    for (label, kind, class) in candidates {
+        let mut extra = vec![("appIdId", app_id.app_id_id.as_str())];
+        if let Some(c) = class {
+            extra.push(("DTDeviceClass", c));
+        }
+        let got: Result<Profile, _> = dev
+            .send_dev_request(&dev_url("downloadTeamProvisioningProfile", kind), body(&team, &extra), "provisioningProfile")
+            .await;
+        let profile = match got {
+            Ok(p) => p,
+            Err(e) => {
+                println!("  {label}: 失败 / failed: {}", first_line(&e.to_string()));
+                continue;
+            }
+        };
+        let (platforms, lists_tv) = inspect(profile.encoded_profile.as_ref(), &args.udid);
+        println!("  {label}: \"{}\" platform={platforms:?} lists this Apple TV={lists_tv}", profile.name);
+        let is_tvos = platforms.iter().any(|p| p.eq_ignore_ascii_case("tvos"));
+        if is_tvos && lists_tv {
+            chosen = Some(profile);
+            break;
+        }
+        if lists_tv && fallback.is_none() {
+            fallback = Some(profile);
+        }
+    }
+    let profile = match (chosen, fallback) {
+        (Some(p), _) => p,
+        (None, Some(p)) => {
+            println!("没拿到 tvOS 平台的描述文件，先用列有这台 Apple TV 的那份签名（安装可能被拒）。");
+            p
+        }
+        (None, None) => {
+            return Err(Box::new("没有任何一份描述文件列出这台 Apple TV。把上面的输出发给 Claude。"));
+        }
+    };
+    println!("使用描述文件 / using profile: {}", profile.name);
 
     // 5. sign in place
     app.bundle.write_info().map_err(fail("write Info.plist"))?;
@@ -276,4 +368,30 @@ async fn run(args: Args) -> Result<(), Error> {
     .map_err(fail("sign"))?;
     println!("签名完成 / signed: {} ({app_id_str})", args.app.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::inspect;
+
+    #[test]
+    fn reads_platform_and_devices_from_a_signed_profile() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Name</key><string>tvOS Team Provisioning Profile: x</string>
+<key>Platform</key><array><string>tvOS</string></array>
+<key>ProvisionedDevices</key><array><string>00008110-000578493E86801E</string></array>
+</dict></plist>"#;
+        // CMS wrapper bytes around the XML, as in a real .mobileprovision
+        let mut der = vec![0x30, 0x82, 0x1f, 0x00, 0x06, 0x09, 0x2a, 0x86];
+        der.extend_from_slice(xml.as_bytes());
+        der.extend_from_slice(&[0xa0, 0x82, 0x0d, 0x30, 0x82, 0x04, 0x3c, 0x30]);
+        let (platforms, lists) = inspect(&der, "00008110-000578493e86801e");
+        assert_eq!(platforms, vec!["tvOS".to_string()]);
+        assert!(lists);
+        let (_, other) = inspect(&der, "00008110-0000000000000000");
+        assert!(!other);
+        assert_eq!(inspect(b"no plist here", "x"), (vec![], false));
+    }
 }

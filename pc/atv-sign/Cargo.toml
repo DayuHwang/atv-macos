@@ -15,6 +15,7 @@ isideload = { git = "https://github.com/nab138/isideload", rev = "326e56229d0727
 tokio = { version = "1.49", features = ["rt-multi-thread", "macros"] }
 rustls = { version = "0.23", default-features = false, features = ["ring"] }
 rpassword = "7"
+plist = "1.8"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 
