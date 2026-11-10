@@ -46,6 +46,8 @@ def load_settings(lab: Path) -> dict:
     settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     for key, default in (("ram_mb", 3072), ("cpus", 4), ("jit_mb", 256)):
         settings.setdefault(key, default)
+    # Extra environment for the app; HV_STATS makes the engine log its speed every N seconds.
+    settings.setdefault("env", {"HV_STATS": "30"})
     if not settings.get("vnc_password"):
         alphabet = string.ascii_letters + string.digits
         settings["vnc_password"] = "".join(secrets.choice(alphabet) for _ in range(8))  # VNC uses 8 characters
@@ -264,7 +266,14 @@ async def crash_reports(rsd, lab: Path, since: float) -> None:
 
 # ---------------------------------------------------------------- main loop
 
-async def keep(lab: Path, once: bool, diag: bool = False, crashes_only: bool = False) -> None:
+async def kill(rsd, pid: int) -> None:
+    from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
+    from pymobiledevice3.services.dvt.instruments.process_control import ProcessControl
+    async with DvtProvider(rsd) as dvt, ProcessControl(dvt) as pc:
+        await pc.kill(pid)
+
+
+async def keep(lab: Path, once: bool, diag: bool = False, crashes_only: bool = False, restart: bool = False) -> None:
     sys.path.insert(0, str(lab))
     import developer  # the lab's tunnel code
     developer.configure_library()
@@ -272,6 +281,7 @@ async def keep(lab: Path, once: bool, diag: bool = False, crashes_only: bool = F
     settings = load_settings(lab)
     password = settings["vnc_password"]
     LAUNCH_ENV.update(ATV_RAM_MB=str(settings["ram_mb"]), ATV_CPUS=str(settings["cpus"]), ATV_JIT_MB=str(settings["jit_mb"]))
+    LAUNCH_ENV.update({str(k): str(v) for k, v in (settings.get("env") or {}).items()})
     say(f"虚拟 Mac 配置：内存 {settings['ram_mb']} MB，{settings['cpus']} 个 CPU，JIT 缓存 {settings['jit_mb']} MB"
         f"（改 data\\atv-macos.json 后重开本程序生效）")
     say(f"Apple TV {host}；VNC 连接 {host}:5900，密码 {password}；状态页 http://{host}:8080")
@@ -291,6 +301,13 @@ async def keep(lab: Path, once: bool, diag: bool = False, crashes_only: bool = F
                 if crashes_only:
                     await crash_reports(rsd, lab, time.time() - 6 * 3600)
                     return
+                if restart:
+                    pid = await running_pid(rsd, bundle)
+                    if pid:
+                        say("按要求重启：先关掉正在运行的 App（虚拟 Mac 会重新开机）。")
+                        await kill(rsd, pid)
+                        await asyncio.sleep(3)
+                    restart = False
                 while True:
                     s = status(host)
                     pid = await running_pid(rsd, bundle)
@@ -360,9 +377,10 @@ def main() -> None:
     ap.add_argument("--once", action="store_true", help="grant JIT once and exit instead of keeping the app alive")
     ap.add_argument("--diagnose", action="store_true", help="launch with the device log streaming and show why a launch fails")
     ap.add_argument("--crashes", action="store_true", help="pull and summarise the app's recent crash and memory reports")
+    ap.add_argument("--restart", action="store_true", help="stop the running app first, so new settings apply")
     args = ap.parse_args()
     try:
-        asyncio.run(keep(args.lab.resolve(), args.once, args.diagnose, args.crashes))
+        asyncio.run(keep(args.lab.resolve(), args.once, args.diagnose, args.crashes, args.restart))
     except KeyboardInterrupt:
         pass
 

@@ -51,3 +51,6 @@
    Free Apple IDs sign for 7 days; run it again to renew.
 3. `ATV-Mac-Keeper.cmd`: keep it open. It shows the VNC address and password.
 4. `ATV-Mac-VNC.cmd`: opens the Mac in TigerVNC Viewer (Ctrl+Alt+M for the viewer menu).
+5. `ATV-Mac-Restart.cmd`: after changing `data\atv-macos.json` (ram_mb, cpus, jit_mb, env),
+   restarts the app so the new settings apply, then keeps it alive like the keeper.
+   `env.HV_STATS` (default 30) makes the engine log its speed every N seconds.
