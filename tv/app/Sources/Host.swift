@@ -77,14 +77,29 @@ final class Host {
     /// JIT code cache. An Apple TV 4K has 4 GB of RAM in all and every page of
     /// this region is touched (made resident) when it is granted, so it is kept
     /// smaller than on an iPhone. Override with `jitMB` in UserDefaults.
-    private var jitBytes: Int {
-        let mb = UserDefaults.standard.integer(forKey: "jitMB")
-        return (mb >= 128 ? mb : 512) << 20
+    /// Tuning passed by the PC's keeper at launch (data/atv-macos.json there), so it can
+    /// change without reinstalling: ATV_RAM_MB, ATV_CPUS, ATV_JIT_MB.
+    private static func env(_ name: String) -> Int? {
+        ProcessInfo.processInfo.environment[name].flatMap { Int($0) }
     }
+
+    /// JIT code cache. An Apple TV 4K has 4 GB of RAM in all and every page of this
+    /// region is made resident when it is granted, so it is much smaller than on an iPhone.
+    private var jitBytes: Int {
+        let mb = Host.env("ATV_JIT_MB") ?? 256
+        return max(128, mb) << 20
+    }
+
+    private let launched = DispatchSemaphore(value: 0)
 
     func start() {
         UIApplication.shared.isIdleTimerDisabled = true   // the screensaver would suspend us
         henge_ios_jit_install_trap_handler()
+        // The JIT grant remaps a large stretch of address space. Done while UIKit was still
+        // loading its frameworks, an image lost its data segment (three crashes at launch, in
+        // FrontBoardServices/UIKit init); so it waits until the app has finished launching.
+        NotificationCenter.default.addObserver(forName: UIApplication.didBecomeActiveNotification, object: nil,
+                                               queue: nil) { [weak self] _ in self?.launched.signal() }
         Thread.detachNewThread { [self] in
             Thread.current.name = "atv-host"
             do { try run() } catch {
@@ -100,6 +115,8 @@ final class Host {
         var config = loadConfig()
         lock.lock(); _status.installed = config.installed; lock.unlock()
 
+        if launched.wait(timeout: .now() + 20) == .timedOut { Log.line("host", "no didBecomeActive after 20 s; going on") }
+        Thread.sleep(forTimeInterval: 2)
         try waitForJIT()
 
         if !config.installed {
@@ -223,21 +240,29 @@ final class Host {
 
     private func boot(_ config: MachineConfig) throws {
         set("booting", "Starting the Mac")
-        let ram = guestMemory(asked: config.ramMB)
+        let ram = guestMemory(asked: UInt64(Host.env("ATV_RAM_MB") ?? 3072))
+        let cpus = Int32(min(6, max(1, Host.env("ATV_CPUS") ?? Int(config.cpus))))
         henge_vm_set_display(config.width, config.height)
         henge_vm_set_display_mm(0, 0)
         var err = [CChar](repeating: 0, count: 512)
-        guard henge_vm_boot(rom.path, disk.path, aux.path, config.ecid, config.seed, ram, config.cpus, &err, err.count) == 0 else {
+        guard henge_vm_boot(rom.path, disk.path, aux.path, config.ecid, config.seed, ram, cpus, &err, err.count) == 0 else {
             throw HostError("The Mac did not start: \(String(cString: err))")
         }
         lock.lock(); _status.guestRAMMB = ram; lock.unlock()
-        set("running", "\(ram) MB, \(config.cpus) CPUs, \(config.width)x\(config.height)")
+        set("running", "\(ram) MB, \(cpus) CPUs, \(config.width)x\(config.height)")
     }
 
     /// Guest RAM: kept out of the app's memory limit once a debugger has attached,
     /// otherwise backed by a file on storage, which the limit does not count either.
     private func guestMemory(asked: UInt64) -> UInt64 {
         setenv("HV_RAM_FILE", Storage.machine.appendingPathComponent("ram.tmp").path, 1)
+        // Henge first asks for anonymous memory kept off the app's footprint ledger. That keeps
+        // jetsam's per-app limit away on an iPhone, but on a 4 GB Apple TV the pages are still
+        // physical: the compressor filled and the system killed us (vm-compressor-space-shortage).
+        // A MAP_SHARED file instead lets the kernel write guest pages out and drop them.
+        // Not prefaulted: touching all of it at boot would push everything else out at once.
+        setenv("HV_RAM_NO_LEDGER", "1", 1)
+        setenv("HV_RAM_NO_PREFAULT", "1", 1)
         let free = Storage.freeBytes
         let room = free > (2 << 30) ? UInt64(free - (2 << 30)) >> 20 : 0
         let reach = henge_largest_mapping_mb()

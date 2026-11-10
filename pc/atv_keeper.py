@@ -44,11 +44,13 @@ def say(text: str) -> None:
 def load_settings(lab: Path) -> dict:
     path = lab / "data" / "atv-macos.json"
     settings = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    for key, default in (("ram_mb", 3072), ("cpus", 4), ("jit_mb", 256)):
+        settings.setdefault(key, default)
     if not settings.get("vnc_password"):
         alphabet = string.ascii_letters + string.digits
         settings["vnc_password"] = "".join(secrets.choice(alphabet) for _ in range(8))  # VNC uses 8 characters
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(settings, ensure_ascii=False, indent=2), encoding="utf-8")
     return settings
 
 
@@ -78,12 +80,15 @@ async def running_pid(rsd, bundle_id: str) -> int:
             return 0
 
 
+LAUNCH_ENV: dict[str, str] = {}
+
+
 async def launch(rsd, bundle_id: str, password: str, suspended: bool = True) -> int:
     from pymobiledevice3.services.dvt.instruments.dvt_provider import DvtProvider
     from pymobiledevice3.services.dvt.instruments.process_control import ProcessControl
     async with DvtProvider(rsd) as dvt, ProcessControl(dvt) as pc:
         return await pc.launch(bundle_id, kill_existing=True, start_suspended=suspended,
-                               environment={"ATV_VNC_PASSWORD": password})
+                               environment={"ATV_VNC_PASSWORD": password, **LAUNCH_ENV})
 
 
 async def launch_for_jit(rsd, bundle_id: str, password: str) -> int:
@@ -264,7 +269,11 @@ async def keep(lab: Path, once: bool, diag: bool = False, crashes_only: bool = F
     import developer  # the lab's tunnel code
     developer.configure_library()
     udid, host = tv_host(lab)
-    password = load_settings(lab)["vnc_password"]
+    settings = load_settings(lab)
+    password = settings["vnc_password"]
+    LAUNCH_ENV.update(ATV_RAM_MB=str(settings["ram_mb"]), ATV_CPUS=str(settings["cpus"]), ATV_JIT_MB=str(settings["jit_mb"]))
+    say(f"虚拟 Mac 配置：内存 {settings['ram_mb']} MB，{settings['cpus']} 个 CPU，JIT 缓存 {settings['jit_mb']} MB"
+        f"（改 data\\atv-macos.json 后重开本程序生效）")
     say(f"Apple TV {host}；VNC 连接 {host}:5900，密码 {password}；状态页 http://{host}:8080")
 
     failures = 0
