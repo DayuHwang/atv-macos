@@ -38,10 +38,29 @@ jobs:
       - name: Update APT repos
         run: sudo apt-get update
 
-      - name: Set-up D compiler
-        uses: ./.github/actions/setup-d-compiler
+      # Upstream's setup action reads the LDC version with `ldc2 --version | head -n 1`,
+      # which fails under the runner's pipefail (ldc2 dies of SIGPIPE). Same steps, version pinned.
+      - uses: dlang-community/setup-dlang@v1
         with:
-          target-triple: x86_64-windows-msvc
+          compiler: ldc-1.34.0
+
+      - name: LDC target x86_64-windows-msvc
+        env:
+          LDC_VERSION: 1.34.0
+        run: |
+          sudo apt-get install -y clang lld 7zip
+          mkdir -p "$HOME/.ldc"
+          cat > "$HOME/.ldc/ldc2.conf" <<EOF
+          "x86_64-.*-windows-msvc":
+          {
+              switches = [ "-defaultlib=phobos2-ldc,druntime-ldc" ];
+              post-switches = [ "-I$HOME/ldc2-$LDC_VERSION-windows-x64/import" ];
+              lib-dirs = [ "$HOME/ldc2-$LDC_VERSION-windows-x64/lib" ];
+          };
+          EOF
+          curl -sSLO "https://github.com/ldc-developers/ldc/releases/download/v$LDC_VERSION/ldc2-$LDC_VERSION-windows-x64.7z"
+          7z x -bd "./ldc2-$LDC_VERSION-windows-x64.7z" -o"$HOME" > /dev/null
+          rm "./ldc2-$LDC_VERSION-windows-x64.7z"
 
       - name: Write version file
         uses: ./.github/actions/write-version-file
