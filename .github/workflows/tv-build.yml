@@ -5,7 +5,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  engine:
+  build:
     # Xcode 27 (tvOS 27 SDK) lives on its own image: label xcode-27, arm64 only.
     runs-on: xcode-27
     timeout-minutes: 60
@@ -29,10 +29,35 @@ jobs:
         run: zsh tv/build-engine.sh
 
       - name: Installer stack for appletvos
-        if: always()
         run: zsh tv/build-restore.sh
 
+      - name: Generate the Xcode project
+        run: |
+          command -v xcodegen >/dev/null || brew install xcodegen
+          cd tv/app && xcodegen generate
+
+      - name: Build the tvOS app (unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild -project tv/app/ATVMac.xcodeproj -scheme ATVMac -configuration Release \
+            -sdk appletvos -derivedDataPath build/dd \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build 2>&1 \
+            | tee build/xcodebuild.log | grep -E "error:|warning: .*(Sources|tv/)|BUILD (SUCCEEDED|FAILED)" || true
+          test -d build/dd/Build/Products/Release-appletvos/ATVMac.app
+
+      - name: Package the IPA
+        run: |
+          rm -rf build/ipa && mkdir -p build/ipa/Payload
+          cp -R build/dd/Build/Products/Release-appletvos/ATVMac.app build/ipa/Payload/
+          (cd build/ipa && zip -qry ../ATVMac-unsigned.ipa Payload)
+          ls -l build/ATVMac-unsigned.ipa
+
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: tv-libs
-          path: build/tv/*.a
+          name: atv-macos
+          path: |
+            build/ATVMac-unsigned.ipa
+            build/tv/*.a
+            build/xcodebuild.log
+          if-no-files-found: ignore

@@ -10,6 +10,7 @@
  */
 #include <stdint.h>
 #include "net_slirp.h"
+#include "dns_proxy.h"
 
 uint64_t hv_net_tx_frames, hv_net_rx_frames;
 
@@ -21,3 +22,10 @@ int hv_net_attach(HvMachine *m, HvVirtioNet *n) {
 }
 
 void hv_net_poll(void) {}
+
+/* henge-vm.c reports DNS proxy counters on the session screen. */
+void hv_dns_proxy_stats(uint64_t *answered, uint64_t *handed_back, uint64_t *timed_out) {
+    if (answered) *answered = 0;
+    if (handed_back) *handed_back = 0;
+    if (timed_out) *timed_out = 0;
+}

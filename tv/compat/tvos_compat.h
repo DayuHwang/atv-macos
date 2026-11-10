@@ -12,7 +12,7 @@
 #define ATV_TVOS_COMPAT_H
 
 #include <TargetConditionals.h>
-#if TARGET_OS_TV
+#if TARGET_OS_TV && !defined(__ASSEMBLER__)
 #include <signal.h>
 #include <unistd.h>
 

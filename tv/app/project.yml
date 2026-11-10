@@ -1,0 +1,67 @@
+# atv-macos tvOS app (xcodegen). Built unsigned in CI; signed on the PC with the
+# owner's own Apple ID (Impactor) before installing on the Apple TV.
+name: ATVMac
+options:
+  bundleIdPrefix: io.github.dayuhwang
+  deploymentTarget:
+    tvOS: "17.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    ARCHS: arm64
+    ONLY_ACTIVE_ARCH: YES
+    ENABLE_BITCODE: NO
+    SWIFT_VERSION: "5.0"
+    SWIFT_OPTIMIZATION_LEVEL: "-O"
+    GCC_OPTIMIZATION_LEVEL: "2"
+    CLANG_C_LANGUAGE_STANDARD: c11
+
+targets:
+  ATVMac:
+    type: application
+    platform: tvOS
+    sources:
+      - path: Sources
+      # Henge's app-facing engine API and its JIT allocator, reused unmodified.
+      - path: ../../engine/henge/ios/Henge/Native/henge-vm.c
+      - path: ../../engine/henge/ios/Henge/Native/henge-ios-jit.c
+      - path: ../../engine/henge/ios/Henge/Native/henge-brk.S
+      # Fetches the virtual Mac's boot ROM from Apple's restore image.
+      - path: ../../engine/henge/ios/Henge/BootROM.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.dayuhwang.atvmac
+        PRODUCT_NAME: ATVMac
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        INFOPLIST_FILE: Info.plist
+        SWIFT_OBJC_BRIDGING_HEADER: Sources/ATVBridge.h
+        HEADER_SEARCH_PATHS:
+          - "$(SRCROOT)/../../engine/henge/core"
+          - "$(SRCROOT)/../../engine/henge/host"
+          - "$(SRCROOT)/../../engine/henge/devices"
+          - "$(SRCROOT)/../../engine/henge/ios/Henge/Native"
+        OTHER_CFLAGS:
+          - "-include"
+          - "$(SRCROOT)/../compat/tvos_compat.h"
+        LIBRARY_SEARCH_PATHS:
+          - "$(inherited)"
+          - "$(SRCROOT)/../../build/tv"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-ObjC"              # load tv/compat's category from the static library
+          - "-lhengevm"
+          - "-lhengerestore"
+          - "-lz"
+          - "-lresolv"
+          - "-framework"
+          - "Metal"
+          - "-framework"
+          - "IOSurface"
+          - "-framework"
+          - "AudioToolbox"
+          - "-framework"
+          - "CoreFoundation"
+        CODE_SIGNING_ALLOWED: "NO"
+        CODE_SIGNING_REQUIRED: "NO"
