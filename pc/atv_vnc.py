@@ -281,7 +281,7 @@ def main() -> int:
         cmd = [runner, str(Path(__file__).resolve()), "--relay", "--lab", str(lab), "--host", host]
         subprocess.Popen(cmd, cwd=str(lab), creationflags=DETACHED | NO_WINDOW, close_fds=True,
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    say(f"已打开 TigerVNC Viewer → {host}:{VNC_PORT}（F8 是查看器菜单：全屏、发送 Ctrl+Alt+Del 等）")
+    say(f"已打开 TigerVNC Viewer → {host}:{VNC_PORT}（Ctrl+Alt+M 打开查看器菜单：退出全屏、退出查看器等）")
     return 0
 
 

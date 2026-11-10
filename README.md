@@ -50,4 +50,4 @@
 2. `ATV-Mac-Install.cmd`: type your Apple ID, password (hidden) and 2FA code when asked.
    Free Apple IDs sign for 7 days; run it again to renew.
 3. `ATV-Mac-Keeper.cmd`: keep it open. It shows the VNC address and password.
-4. `ATV-Mac-VNC.cmd`: opens the Mac in TigerVNC Viewer (F8 for the viewer menu).
+4. `ATV-Mac-VNC.cmd`: opens the Mac in TigerVNC Viewer (Ctrl+Alt+M for the viewer menu).
